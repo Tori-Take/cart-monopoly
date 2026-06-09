@@ -1,0 +1,18 @@
+# Node modules / build artifacts
+node_modules/
+.next/
+dist/
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS / Editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# 環境ファイル
+.env
+.env.local

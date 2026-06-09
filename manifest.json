@@ -1,0 +1,41 @@
+{
+  "$schema": "https://appharbor.app/cartridge-schema-v1.json",
+  "spec_version": "1",
+  "id": "monopoly",
+  "version": "0.1.0",
+  "name": "モノポリー",
+  "description": "モノポリー：ＰＣとスマートフォンで楽しもう！",
+  "icon": "📦",
+  "category": "その他",
+  "studioCompatible": true,
+  "appharbor": {
+    "sdkVersion": "^1.0",
+    "minPlatformVersion": "0.5.0"
+  },
+  "permissions": [
+    {
+      "id": "viewer",
+      "label": "閲覧者",
+      "default": true,
+      "description": "閲覧のみ"
+    },
+    {
+      "id": "admin",
+      "label": "管理者",
+      "description": "全操作"
+    }
+  ],
+  "navigation": [
+    {
+      "label": "ホーム",
+      "path": "/",
+      "icon": "Home",
+      "minRole": "viewer"
+    }
+  ],
+  "tablePrefix": "monopoly",
+  "tables": [],
+  "depends": [],
+  "emits": [],
+  "subscribes": []
+}
