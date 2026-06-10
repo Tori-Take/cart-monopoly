@@ -4,37 +4,53 @@
   "id": "monopoly",
   "version": "0.1.0",
   "name": "モノポリー",
-  "description": "モノポリー：ＰＣとスマートフォンで楽しもう！",
-  "icon": "📦",
-  "category": "その他",
+  "description": "PCの共有盤面とスマートフォンのコントローラーで遊ぶ、保存・再開対応のモノポリーゲームです。",
+  "icon": "🎩",
+  "category": "game",
   "studioCompatible": true,
+  "fullscreen": true,
   "appharbor": {
     "sdkVersion": "^1.0",
     "minPlatformVersion": "0.5.0"
   },
   "permissions": [
     {
-      "id": "viewer",
-      "label": "閲覧者",
+      "id": "player",
+      "label": "プレイヤー",
       "default": true,
-      "description": "閲覧のみ"
+      "description": "スマートフォンからゲームへ参加・操作"
+    },
+    {
+      "id": "host",
+      "label": "ゲームホスト",
+      "description": "ゲーム作成・端末割当・進行管理"
     },
     {
       "id": "admin",
       "label": "管理者",
-      "description": "全操作"
+      "description": "保存ゲームの管理を含む全操作"
     }
   ],
   "navigation": [
     {
-      "label": "ホーム",
+      "label": "ゲーム卓",
       "path": "/",
-      "icon": "Home",
-      "minRole": "viewer"
+      "minRole": "host"
+    },
+    {
+      "label": "保存ゲーム管理",
+      "path": "/admin",
+      "minRole": "admin"
     }
   ],
   "tablePrefix": "monopoly",
-  "tables": [],
+  "tables": [
+    "monopoly_games",
+    "monopoly_players",
+    "monopoly_controllers",
+    "monopoly_properties",
+    "monopoly_events"
+  ],
   "depends": [],
   "emits": [],
   "subscribes": []
