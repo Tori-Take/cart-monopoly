@@ -380,6 +380,8 @@ export function HostGame({
             currentPlayerId={bundle.game.current_player_id}
             center={center}
           />
+        </div>
+        <div className="bannerSlot">
           {banner ? (
             <div
               key={banner.id}
@@ -746,17 +748,14 @@ export function HostGame({
           color: #fff8ed;
           font-family: Inter, "Noto Sans JP", system-ui, sans-serif;
         }
-        .boardColumn { min-width: 0; display: grid; place-items: center; }
+        .boardColumn { min-width: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; }
         .boardStage { position: relative; width: min(100%, 88vh); min-width: 0; }
+        .bannerSlot { width: min(100%, 88vh); min-height: 52px; display: flex; align-items: center; }
         .eventBanner {
-          position: absolute;
-          left: 50%;
-          bottom: 2.5%;
-          z-index: 30;
           display: flex;
           align-items: center;
           gap: 10px;
-          max-width: 86%;
+          width: 100%;
           padding: 10px 18px;
           border: 2px solid #171717;
           border-left: 10px solid var(--actor-color);
@@ -766,14 +765,13 @@ export function HostGame({
           color: #181413;
           font-size: clamp(13px, 1.4vw, 19px);
           font-weight: 800;
-          transform: translateX(-50%);
           animation: bannerIn 240ms cubic-bezier(.2, .9, .3, 1.2);
         }
-        .bannerIcon { font-size: clamp(16px, 1.8vw, 26px); }
+        .bannerIcon { font-size: clamp(16px, 1.8vw, 26px); flex-shrink: 0; }
         .bannerText { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         @keyframes bannerIn {
-          from { opacity: 0; transform: translateX(-50%) translateY(12px); }
-          to { opacity: 1; transform: translateX(-50%) translateY(0); }
+          from { opacity: 0; transform: translateY(8px); }
+          to   { opacity: 1; transform: translateY(0); }
         }
         .centerConsole {
           position: relative;
@@ -923,6 +921,7 @@ export function HostGame({
         @media (max-width: 1050px) {
           .hostShell { grid-template-columns: 1fr; }
           .boardStage { width: min(100%, 82vh); }
+          .bannerSlot  { width: min(100%, 82vh); }
           .hostPanel { max-height: none; overflow: visible; }
         }
       `}</style>
