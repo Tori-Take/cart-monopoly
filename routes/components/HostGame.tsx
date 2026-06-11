@@ -117,16 +117,27 @@ export function HostGame({
   }, [refresh])
 
   useEffect(() => {
-    const timer = window.setTimeout(() => {
-      const url = new URL(
-        `/org/${slug}/apps/monopoly/join/${bundle.game.join_code}`,
-        window.location.origin,
-      )
+    let cancelled = false
+    const buildJoinUrl = (base: string) => {
+      const url = new URL(`/org/${slug}/apps/monopoly/join/${bundle.game.join_code}`, base)
       url.searchParams.set('game', bundle.game.id)
       url.searchParams.set('t', bundle.game.join_secret)
-      setJoinUrl(url.toString())
-    }, 0)
-    return () => window.clearTimeout(timer)
+      return url.toString()
+    }
+    // Studio dev 環境では LAN IP を取得してスマホから届く URL を生成する。
+    // 本番や API が存在しない環境ではフォールバックとして現在のオリジンを使う。
+    fetch('/api/studio-env')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((j: { localUrl?: string } | null) => {
+        if (cancelled) return
+        setJoinUrl(buildJoinUrl((j?.localUrl ?? window.location.origin) as string))
+      })
+      .catch(() => {
+        if (!cancelled) setJoinUrl(buildJoinUrl(window.location.origin))
+      })
+    return () => {
+      cancelled = true
+    }
   }, [bundle.game.id, bundle.game.join_code, bundle.game.join_secret, slug])
 
   const currentPlayer = bundle.players.find(
