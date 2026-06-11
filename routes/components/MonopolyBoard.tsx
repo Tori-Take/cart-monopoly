@@ -1,6 +1,12 @@
 'use client'
 
-import type { CSSProperties, ReactNode } from 'react'
+import {
+  useEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+  type ReactNode,
+} from 'react'
 import type { BoardSpace, Player, PropertyState } from '../_types'
 import { BOARD } from '../gameData'
 import { TokenPiece } from './TokenPiece'
@@ -20,6 +26,18 @@ function getSide(index: number) {
 }
 
 const CORNER_TYPES = ['go', 'jail', 'parking', 'go_to_jail']
+
+// 同じマスに複数の駒が居る時のずらし量 (盤面サイズに対する %)
+const SLOT_OFFSETS = [
+  { x: 0, y: 0 },
+  { x: -2.2, y: -1.7 },
+  { x: 2.2, y: -1.7 },
+  { x: -2.2, y: 1.8 },
+  { x: 2.2, y: 1.8 },
+  { x: 0, y: -3.2 },
+  { x: 0, y: 3.2 },
+  { x: -4.2, y: 0 },
+]
 
 function subLabel(space: BoardSpace) {
   if (space.type === 'go') return 'COLLECT $200'
@@ -43,14 +61,52 @@ export function MonopolyBoard({
   currentPlayerId: string | null
   center: ReactNode
 }) {
+  const boardRef = useRef<HTMLDivElement | null>(null)
+  const spaceRefs = useRef<Array<HTMLElement | null>>([])
+  const [anchors, setAnchors] = useState<Array<{ x: number; y: number }> | null>(
+    null,
+  )
+
+  useEffect(() => {
+    const board = boardRef.current
+    if (!board) return
+    const measure = () => {
+      if (board.offsetWidth === 0) return
+      setAnchors(
+        BOARD.map((_, index) => {
+          const el = spaceRefs.current[index]
+          if (!el) return { x: 50, y: 50 }
+          return {
+            x: ((el.offsetLeft + el.offsetWidth / 2) / board.offsetWidth) * 100,
+            y: ((el.offsetTop + el.offsetHeight / 2) / board.offsetHeight) * 100,
+          }
+        }),
+      )
+    }
+    measure()
+    const observer = new ResizeObserver(measure)
+    observer.observe(board)
+    return () => observer.disconnect()
+  }, [])
+
   const propertyMap = new Map(
     properties.map((property) => [property.space_index, property]),
   )
   const playerMap = new Map(players.map((player) => [player.id, player]))
 
+  const activeTokens = players
+    .filter((player) => !player.bankrupt)
+    .sort((a, b) => a.seat_order - b.seat_order)
+  const tokensByPosition = new Map<number, Player[]>()
+  for (const player of activeTokens) {
+    const list = tokensByPosition.get(player.position) ?? []
+    list.push(player)
+    tokensByPosition.set(player.position, list)
+  }
+
   return (
     <section className="boardFrame" aria-label="モノポリー盤面">
-      <div className="monopolyBoard">
+      <div className="monopolyBoard" ref={boardRef}>
         <div className="boardCenter">
           <span className="deck chanceDeck" />
           <span className="deck chestDeck" />
@@ -64,14 +120,14 @@ export function MonopolyBoard({
           const owner = property?.owner_player_id
             ? playerMap.get(property.owner_player_id)
             : null
-          const tokens = players.filter(
-            (player) => !player.bankrupt && player.position === space.index,
-          )
           const side = getSide(space.index)
           const isCorner = CORNER_TYPES.includes(space.type)
           return (
             <article
               key={space.index}
+              ref={(el) => {
+                spaceRefs.current[space.index] = el
+              }}
               className={`boardSpace ${side.name} ${space.type} ${
                 isCorner ? 'corner' : ''
               } ${owner ? 'ownedSpace' : ''}`}
@@ -99,38 +155,53 @@ export function MonopolyBoard({
                     : '▪'.repeat(property.buildings)}
                 </span>
               ) : null}
-              {tokens.length > 0 ? (
-                <div className="spaceTokens">
-                  {tokens.map((player) => (
-                    <span
-                      key={player.id}
-                      className={
-                        player.id === currentPlayerId ? 'activeToken' : ''
-                      }
-                      style={{ borderColor: player.color }}
-                    >
-                      <TokenPiece
-                        tokenId={player.token_id}
-                        size={26}
-                        label={player.display_name}
-                      />
-                    </span>
-                  ))}
-                </div>
-              ) : null}
             </article>
           )
         })}
+
+        {anchors ? (
+          <div className="tokenLayer">
+            {activeTokens.map((player) => {
+              const anchor = anchors[player.position] ?? { x: 50, y: 50 }
+              const group = tokensByPosition.get(player.position) ?? []
+              const slot = Math.min(
+                Math.max(0, group.findIndex((item) => item.id === player.id)),
+                SLOT_OFFSETS.length - 1,
+              )
+              const offset = SLOT_OFFSETS[slot]
+              return (
+                <span
+                  key={player.id}
+                  className={`boardToken ${
+                    player.id === currentPlayerId ? 'activeToken' : ''
+                  }`}
+                  style={{
+                    left: `${anchor.x + offset.x}%`,
+                    top: `${anchor.y + offset.y}%`,
+                    borderColor: player.color,
+                  }}
+                >
+                  <TokenPiece
+                    tokenId={player.token_id}
+                    size={26}
+                    label={player.display_name}
+                  />
+                </span>
+              )
+            })}
+          </div>
+        ) : null}
       </div>
 
       <style>{`
         .boardFrame {
-          width: min(100%, 88vh);
+          width: 100%;
           aspect-ratio: 1;
           min-width: 0;
           perspective: 1200px;
         }
         .monopolyBoard {
+          position: relative;
           width: 100%;
           height: 100%;
           display: grid;
@@ -306,30 +377,36 @@ export function MonopolyBoard({
           white-space: nowrap;
         }
         .buildingMark.b5 { color: #b91c1c; font-size: clamp(8px, .95vw, 15px); }
-        .spaceTokens {
+        .tokenLayer {
           position: absolute;
+          inset: 0;
           z-index: 12;
-          right: 2px;
-          bottom: 2px;
-          display: flex;
-          flex-wrap: wrap-reverse;
-          justify-content: flex-end;
-          max-width: 72%;
           pointer-events: none;
         }
-        .spaceTokens > span {
-          width: clamp(14px, 1.65vw, 28px);
-          height: clamp(14px, 1.65vw, 28px);
+        .boardToken {
+          position: absolute;
+          width: clamp(16px, 2vw, 30px);
+          height: clamp(16px, 2vw, 30px);
           display: grid;
           place-items: center;
-          margin: -4px 0 0 -5px;
           overflow: hidden;
           border: 2px solid;
           border-radius: 50%;
-          background: rgba(255,255,255,.7);
+          background: rgba(255,255,255,.78);
+          box-shadow: 0 3px 6px rgba(0,0,0,.35);
+          transform: translate(-50%, -50%);
+          transition:
+            top 190ms cubic-bezier(.22, .8, .35, 1.15),
+            left 190ms cubic-bezier(.22, .8, .35, 1.15);
         }
-        .spaceTokens .activeToken {
-          box-shadow: 0 0 0 2px #facc15, 0 0 12px #facc15;
+        .boardToken.activeToken {
+          box-shadow:
+            0 0 0 2px #facc15,
+            0 0 12px #facc15,
+            0 3px 6px rgba(0,0,0,.35);
+        }
+        @media (prefers-reduced-motion: reduce) {
+          .boardToken { transition: none; }
         }
         @media (max-width: 620px) {
           .spaceName { font-size: clamp(.17rem, 1vw, .4rem); }

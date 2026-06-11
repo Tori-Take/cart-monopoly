@@ -8,7 +8,7 @@ import {
   type CSSProperties,
 } from 'react'
 import { BackToAppHarbor } from '@/sdk/client'
-import type { ControllerType, GameBundle, TokenId } from '../_types'
+import type { ControllerType, GameBundle, GameEvent, TokenId } from '../_types'
 import { TOKENS, getSpace } from '../gameData'
 import {
   addPlayerSlotAction,
@@ -44,6 +44,25 @@ function phaseLabel(phase: string) {
   )
 }
 
+const EVENT_ICONS: Record<GameEvent['event_type'], string> = {
+  system: 'ℹ️',
+  join: '📱',
+  assign: '🎮',
+  turn: '▶️',
+  dice: '🎲',
+  move: '🚶',
+  purchase: '📜',
+  auction: '🔨',
+  rent: '💸',
+  card: '🃏',
+  build: '🏠',
+  mortgage: '🏦',
+  trade: '🤝',
+  correction: '🛠️',
+  bankruptcy: '💥',
+  finish: '🏆',
+}
+
 export function HostGame({
   slug,
   initialBundle,
@@ -62,6 +81,25 @@ export function HostGame({
   const [newType, setNewType] = useState<ControllerType>('smartphone')
   const [newToken, setNewToken] = useState<TokenId>('ship')
   const advancingRef = useRef(false)
+  // 駒の表示位置 (実位置に向かって1マスずつ追従させる)
+  const [displayPositions, setDisplayPositions] = useState<Record<string, number>>({})
+  // 盤面下部に流すイベントバナー
+  const [banner, setBanner] = useState<GameEvent | null>(null)
+  const eventQueueRef = useRef<GameEvent[]>([])
+  const lastEventIdRef = useRef<string | null>(null)
+  const eventsInitializedRef = useRef(false)
+  const bannerTimerRef = useRef<number | null>(null)
+
+  const showNextBanner = useCallback(() => {
+    const next = eventQueueRef.current.shift() ?? null
+    setBanner(next)
+    if (next) {
+      const delay = eventQueueRef.current.length >= 3 ? 1200 : 2200
+      bannerTimerRef.current = window.setTimeout(showNextBanner, delay)
+    } else {
+      bannerTimerRef.current = null
+    }
+  }, [])
 
   const refresh = useCallback(async () => {
     const result = await getHostSnapshotAction(slug, bundle.game.id)
@@ -119,6 +157,80 @@ export function HostGame({
     currentPlayer?.controller_type,
     slug,
   ])
+
+  // 卓が切り替わったらアニメーションとバナーを初期化
+  useEffect(() => {
+    eventsInitializedRef.current = false
+    eventQueueRef.current = []
+    lastEventIdRef.current = null
+    if (bannerTimerRef.current !== null) {
+      window.clearTimeout(bannerTimerRef.current)
+      bannerTimerRef.current = null
+    }
+    setBanner(null)
+    setDisplayPositions({})
+  }, [bundle.game.id])
+
+  useEffect(
+    () => () => {
+      if (bannerTimerRef.current !== null) {
+        window.clearTimeout(bannerTimerRef.current)
+      }
+    },
+    [],
+  )
+
+  // 表示位置を実位置へ1マスずつ追従させる (190ms/歩)
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      setDisplayPositions((current) => {
+        let changed = false
+        const next: Record<string, number> = { ...current }
+        for (const player of bundle.players) {
+          const target = player.position
+          const shown = current[player.id]
+          if (shown === undefined) {
+            // 初回はアニメーションせずに実位置へ
+            next[player.id] = target
+            changed = true
+            continue
+          }
+          if (shown === target) continue
+          const forward = (target - shown + 40) % 40
+          const backward = (shown - target + 40) % 40
+          // 「3マス戻る」カードだけ後退。遠距離ワープは2マスずつで間延び防止
+          const step =
+            backward <= 3 ? -1 : Math.min(forward > 12 ? 2 : 1, forward)
+          next[player.id] = (shown + step + 40) % 40
+          changed = true
+        }
+        return changed ? next : current
+      })
+    }, 190)
+    return () => window.clearInterval(timer)
+  }, [bundle.players])
+
+  // 新着イベントをバナーのキューへ積む
+  useEffect(() => {
+    const events = bundle.events
+    if (!eventsInitializedRef.current) {
+      eventsInitializedRef.current = true
+      lastEventIdRef.current = events[events.length - 1]?.id ?? null
+      return
+    }
+    const lastId = lastEventIdRef.current
+    const lastIndex = lastId
+      ? events.findIndex((event) => event.id === lastId)
+      : -1
+    const fresh = lastIndex >= 0 ? events.slice(lastIndex + 1) : events.slice(-5)
+    if (fresh.length === 0) return
+    lastEventIdRef.current = events[events.length - 1]?.id ?? lastId
+    eventQueueRef.current.push(...fresh)
+    if (eventQueueRef.current.length > 8) {
+      eventQueueRef.current = eventQueueRef.current.slice(-6)
+    }
+    if (bannerTimerRef.current === null) showNextBanner()
+  }, [bundle.events, showNextBanner])
 
   const availableTokens = TOKENS.filter(
     (token) => !bundle.players.some((player) => player.token_id === token.id),
@@ -247,12 +359,34 @@ export function HostGame({
     <main className="hostShell">
       <BackToAppHarbor label="アプリ一覧へ" />
       <section className="boardColumn">
-        <MonopolyBoard
-          players={bundle.players}
-          properties={bundle.properties}
-          currentPlayerId={bundle.game.current_player_id}
-          center={center}
-        />
+        <div className="boardStage">
+          <MonopolyBoard
+            players={bundle.players.map((player) => ({
+              ...player,
+              position: displayPositions[player.id] ?? player.position,
+            }))}
+            properties={bundle.properties}
+            currentPlayerId={bundle.game.current_player_id}
+            center={center}
+          />
+          {banner ? (
+            <div
+              key={banner.id}
+              className="eventBanner"
+              style={{
+                '--actor-color':
+                  bundle.players.find(
+                    (player) => player.id === banner.actor_player_id,
+                  )?.color ?? '#efbf64',
+              } as CSSProperties}
+            >
+              <span className="bannerIcon">
+                {EVENT_ICONS[banner.event_type] ?? 'ℹ️'}
+              </span>
+              <span className="bannerText">{banner.message}</span>
+            </div>
+          ) : null}
+        </div>
       </section>
 
       <aside className="hostPanel">
@@ -602,6 +736,34 @@ export function HostGame({
           font-family: Inter, "Noto Sans JP", system-ui, sans-serif;
         }
         .boardColumn { min-width: 0; display: grid; place-items: center; }
+        .boardStage { position: relative; width: min(100%, 88vh); min-width: 0; }
+        .eventBanner {
+          position: absolute;
+          left: 50%;
+          bottom: 2.5%;
+          z-index: 30;
+          display: flex;
+          align-items: center;
+          gap: 10px;
+          max-width: 86%;
+          padding: 10px 18px;
+          border: 2px solid #171717;
+          border-left: 10px solid var(--actor-color);
+          border-radius: 10px;
+          background: rgba(247,240,221,.97);
+          box-shadow: 0 10px 26px rgba(0,0,0,.45);
+          color: #181413;
+          font-size: clamp(13px, 1.4vw, 19px);
+          font-weight: 800;
+          transform: translateX(-50%);
+          animation: bannerIn 240ms cubic-bezier(.2, .9, .3, 1.2);
+        }
+        .bannerIcon { font-size: clamp(16px, 1.8vw, 26px); }
+        .bannerText { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        @keyframes bannerIn {
+          from { opacity: 0; transform: translateX(-50%) translateY(12px); }
+          to { opacity: 1; transform: translateX(-50%) translateY(0); }
+        }
         .centerConsole {
           position: relative;
           z-index: 3;
@@ -749,7 +911,7 @@ export function HostGame({
         .adminLink { color: #efbf64; text-align: center; font-size: 12px; }
         @media (max-width: 1050px) {
           .hostShell { grid-template-columns: 1fr; }
-          .boardFrame { width: min(100%, 82vh); }
+          .boardStage { width: min(100%, 82vh); }
           .hostPanel { max-height: none; overflow: visible; }
         }
       `}</style>
