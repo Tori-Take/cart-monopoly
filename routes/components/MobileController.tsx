@@ -91,6 +91,8 @@ export function MobileController({
   const [offeredProperty, setOfferedProperty] = useState('')
   const [requestedProperty, setRequestedProperty] = useState('')
   const pollingRef = useRef(false)
+  // ポーリング由来のエラーだけを次回成功時にクリアする (操作エラーを即座に消さない)
+  const pollErrorRef = useRef(false)
 
   useEffect(() => {
     let timer: number | null = null
@@ -128,14 +130,19 @@ export function MobileController({
         if (cancelled) return
         if (result.ok) {
           setState(result.state)
-          setError(null)
+          if (pollErrorRef.current) {
+            setError(null)
+            pollErrorRef.current = false
+          }
         } else if (result.error === 'controller_not_found') {
           setIdentity(null)
           setState(null)
           window.localStorage.removeItem(storageKey)
           setError('端末接続が無効になりました。QRコードを読み直してください。')
+          pollErrorRef.current = true
         } else {
           setError(errorLabel(result.error))
+          pollErrorRef.current = true
         }
       } finally {
         pollingRef.current = false
@@ -212,6 +219,7 @@ export function MobileController({
     if (!identity) return
     setBusy(true)
     setError(null)
+    pollErrorRef.current = false
     const result = await controllerActionAction(
       slug,
       code,

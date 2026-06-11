@@ -799,7 +799,9 @@ export function managePropertyEngine(
   }
 
   if (action === 'unmortgage') {
-    const cost = Math.ceil((space.mortgage ?? 0) * 1.1)
+    // 抵当額 + 10% 利息。浮動小数点誤差を避けるため整数演算 (例: 100*1.1=110.00000000000001)
+    const mortgageValue = space.mortgage ?? 0
+    const cost = mortgageValue + Math.ceil(mortgageValue / 10)
     if (!property.mortgaged || player.money < cost) throw new Error('cannot_unmortgage')
     property.mortgaged = false
     player.money -= cost

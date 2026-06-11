@@ -208,7 +208,7 @@ async function persistState(
 ) {
   const supabase = getAdminSupabase()
   const nextVersion = expectedVersion + 1
-  const { data: updatedGame, error: gameError } = await supabase
+  const { error: gameError } = await supabase
     .from('monopoly_games')
     .update({
       status: state.game.status,
@@ -230,13 +230,23 @@ async function persistState(
     .eq('organization_id', organizationId)
     .eq('id', state.game.id)
     .eq('version', expectedVersion)
-    .select('id')
-    .maybeSingle()
 
-  if (gameError || !updatedGame) throw new Error('state_conflict')
+  if (gameError) throw new Error('state_conflict')
+
+  // Studio の supabase-mock は UPDATE ... RETURNING 非対応のため、
+  // .select() の戻りではなく再読込で楽観ロックの成立を確認する
+  const { data: verifyRow } = await supabase
+    .from('monopoly_games')
+    .select('version')
+    .eq('organization_id', organizationId)
+    .eq('id', state.game.id)
+    .maybeSingle()
+  if (!verifyRow || Number(verifyRow.version) !== nextVersion) {
+    throw new Error('state_conflict')
+  }
   state.game.version = nextVersion
 
-  await Promise.all([
+  const writeResults = await Promise.all([
     ...state.players.map((player) =>
       supabase
         .from('monopoly_players')
@@ -272,9 +282,13 @@ async function persistState(
         .eq('id', property.id),
     ),
   ])
+  const failedWrite = writeResults.find((result) => result.error)
+  if (failedWrite?.error) {
+    throw new Error(`persist_failed: ${failedWrite.error.message}`)
+  }
 
   if (state.newEvents.length > 0) {
-    await supabase.from('monopoly_events').insert(
+    const { error: eventError } = await supabase.from('monopoly_events').insert(
       state.newEvents.map((event) => ({
         organization_id: organizationId,
         game_id: state.game.id,
@@ -284,6 +298,7 @@ async function persistState(
         payload: event.payload ?? {},
       })),
     )
+    if (eventError) throw new Error(`persist_failed: ${eventError.message}`)
   }
 }
 
@@ -343,6 +358,8 @@ async function createGame(
         controller_type: 'smartphone',
         token_id: 'hat',
         color: PLAYER_COLORS[0],
+        // 複数行 insert は全行同じカラム構成にする (欠けたキーは null になり not null 違反)
+        connected: false,
       },
       {
         organization_id: organizationId,

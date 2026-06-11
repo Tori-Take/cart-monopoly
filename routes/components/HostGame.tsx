@@ -65,7 +65,12 @@ export function HostGame({
 
   const refresh = useCallback(async () => {
     const result = await getHostSnapshotAction(slug, bundle.game.id)
-    if (result.ok) setBundle(result.bundle)
+    if (result.ok) {
+      // 新規卓へ切替直後に旧卓の応答が遅れて届いた場合は破棄する
+      setBundle((current) =>
+        current.game.id === result.bundle.game.id ? result.bundle : current,
+      )
+    }
   }, [bundle.game.id, slug])
 
   useEffect(() => {
@@ -160,14 +165,19 @@ export function HostGame({
     const title = window.prompt('新しいゲーム卓の名前', 'MONOPOLY')
     if (title === null) return
     setBusy(true)
-    const result = await createNewGameAction(slug, title)
-    if (result.ok) {
-      setBundle(result.bundle)
-      setError(null)
-    } else {
-      setError(result.error)
+    try {
+      const result = await createNewGameAction(slug, title)
+      if (result.ok) {
+        setBundle(result.bundle)
+        setError(null)
+      } else {
+        setError(result.error)
+      }
+    } catch {
+      setError('通信に失敗しました')
+    } finally {
+      setBusy(false)
     }
-    setBusy(false)
   }
 
   async function correctCash(playerId: string) {
