@@ -208,7 +208,10 @@ export function HostGame({
     <div className="centerConsole">
       <div className="brandPlate">
         <small>ROOM {bundle.game.join_code}</small>
-        <strong>MONOPOLY</strong>
+        <span className="logoRow" aria-label="Monopoly">
+          <b className="logoMark">M</b>
+          <strong className="logoText">MONOPOLY</strong>
+        </span>
       </div>
       {bundle.game.status === 'lobby' ? (
         <div className="lobbyCenter">
@@ -620,10 +623,27 @@ export function HostGame({
           font-weight: 1000;
           letter-spacing: .25em;
         }
-        .brandPlate strong {
-          padding: .06em .22em .12em;
-          border: clamp(3px, .5vw, 7px) solid #fff;
-          outline: clamp(1px, .16vw, 3px) solid #111;
+        .logoRow {
+          display: flex;
+          align-items: center;
+          gap: clamp(4px, .8vw, 12px);
+        }
+        .logoMark {
+          display: grid;
+          place-items: center;
+          width: clamp(24px, 3.2vw, 54px);
+          aspect-ratio: .78;
+          border: clamp(2px, .3vw, 4px) solid #fff;
+          background: #111;
+          color: #fff;
+          font-family: Georgia, serif;
+          font-size: clamp(13px, 1.9vw, 30px);
+          font-weight: 900;
+        }
+        .logoText {
+          padding: .08em .22em .12em;
+          border: clamp(3px, .55vw, 8px) solid #fff;
+          outline: clamp(1px, .18vw, 3px) solid #111;
           background: #d52b2f;
           color: #fff;
           font-size: clamp(22px, 4.8vw, 72px);
@@ -631,6 +651,7 @@ export function HostGame({
           line-height: .94;
           letter-spacing: -.075em;
           text-shadow: .05em .06em 0 #111;
+          white-space: nowrap;
         }
         .lobbyCenter,
         .turnCenter {

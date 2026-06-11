@@ -1,7 +1,7 @@
 'use client'
 
 import type { CSSProperties, ReactNode } from 'react'
-import type { Player, PropertyState } from '../_types'
+import type { BoardSpace, Player, PropertyState } from '../_types'
 import { BOARD } from '../gameData'
 import { TokenPiece } from './TokenPiece'
 
@@ -12,15 +12,24 @@ function getGridArea(index: number) {
   return `${index - 29} / 11 / ${index - 28} / 12`
 }
 
-function rotation(index: number) {
-  if (index > 10 && index < 20) return '90deg'
-  if (index > 20 && index < 30) return '180deg'
-  if (index > 30) return '-90deg'
-  return '0deg'
+function getSide(index: number) {
+  if (index <= 10) return { name: 'bottom', rotation: '0deg' }
+  if (index <= 20) return { name: 'left', rotation: '90deg' }
+  if (index <= 30) return { name: 'top', rotation: '180deg' }
+  return { name: 'right', rotation: '-90deg' }
 }
 
-function money(value?: number) {
-  return typeof value === 'number' ? `$${value}` : ''
+const CORNER_TYPES = ['go', 'jail', 'parking', 'go_to_jail']
+
+function subLabel(space: BoardSpace) {
+  if (space.type === 'go') return 'COLLECT $200'
+  if (space.type === 'tax') return `PAY $${space.tax ?? 0}`
+  if (space.type === 'chance') return 'DRAW A CARD'
+  if (space.type === 'chest') return 'FOLLOW INSTRUCTIONS'
+  if (space.type === 'jail') return 'JUST VISITING'
+  if (space.type === 'parking') return 'TAKE A BREAK'
+  if (space.type === 'go_to_jail') return 'GO DIRECTLY TO JAIL'
+  return typeof space.price === 'number' ? `$${space.price}` : ''
 }
 
 export function MonopolyBoard({
@@ -43,8 +52,10 @@ export function MonopolyBoard({
     <section className="boardFrame" aria-label="モノポリー盤面">
       <div className="monopolyBoard">
         <div className="boardCenter">
-          <div className="deck chanceDeck">?</div>
-          <div className="deck chestDeck">★</div>
+          <span className="deck chanceDeck" />
+          <span className="deck chestDeck" />
+          <span className="deckLabel chanceLabel">Chance</span>
+          <span className="deckLabel chestLabel">Community Chest</span>
           {center}
         </div>
 
@@ -56,29 +67,29 @@ export function MonopolyBoard({
           const tokens = players.filter(
             (player) => !player.bankrupt && player.position === space.index,
           )
+          const side = getSide(space.index)
+          const isCorner = CORNER_TYPES.includes(space.type)
           return (
             <article
               key={space.index}
-              className={`boardSpace ${space.type} ${
-                owner ? 'ownedSpace' : ''
-              }`}
+              className={`boardSpace ${side.name} ${space.type} ${
+                isCorner ? 'corner' : ''
+              } ${owner ? 'ownedSpace' : ''}`}
               style={{
                 gridArea: getGridArea(space.index),
-                '--space-rotation': rotation(space.index),
+                '--rotation': side.rotation,
+                '--property-color': space.color ?? 'transparent',
                 '--owner-color': owner?.color ?? 'transparent',
               } as CSSProperties}
               title={space.name}
             >
-              {space.color ? (
-                <div
-                  className="colorBand"
-                  style={{ backgroundColor: space.color }}
-                />
-              ) : null}
               <div className="spaceInner">
-                <strong>{space.name}</strong>
-                {space.icon ? <b className="spaceIcon">{space.icon}</b> : null}
-                {space.price ? <span>{money(space.price)}</span> : null}
+                {space.color ? <div className="colorBar" /> : null}
+                <div className="spaceBody">
+                  <strong className="spaceName">{space.name}</strong>
+                  {space.icon ? <b className="spaceIcon">{space.icon}</b> : null}
+                  <span className="spacePrice">{subLabel(space)}</span>
+                </div>
               </div>
               {property?.mortgaged ? <span className="mortgageMark">M</span> : null}
               {property && property.buildings > 0 ? (
@@ -117,6 +128,7 @@ export function MonopolyBoard({
           width: min(100%, 88vh);
           aspect-ratio: 1;
           min-width: 0;
+          perspective: 1200px;
         }
         .monopolyBoard {
           width: 100%;
@@ -125,11 +137,16 @@ export function MonopolyBoard({
           grid-template-columns: 1.48fr repeat(9, 1fr) 1.48fr;
           grid-template-rows: 1.48fr repeat(9, 1fr) 1.48fr;
           overflow: hidden;
-          border: clamp(3px, .42vw, 7px) solid #111;
+          border: clamp(3px, .45vw, 7px) solid #111;
           background: #c9dfca;
-          box-shadow: 0 2rem 4rem rgba(0,0,0,.48);
+          box-shadow:
+            0 2px 0 #e7f2e3 inset,
+            0 0 0 2px rgba(255,255,255,.14),
+            0 2rem 4rem rgba(0,0,0,.48);
           color: #151515;
           box-sizing: border-box;
+          transform: rotateX(1.5deg);
+          transform-origin: 50% 100%;
           isolation: isolate;
         }
         .boardCenter {
@@ -140,43 +157,56 @@ export function MonopolyBoard({
           overflow: hidden;
           border: 1px solid #1e1e1e;
           background:
-            linear-gradient(135deg, rgba(255,255,255,.15), transparent 48%),
+            linear-gradient(135deg, rgba(255,255,255,.14), transparent 48%),
             #c9dfca;
         }
         .deck {
           position: absolute;
-          display: grid;
-          place-items: center;
-          width: 20%;
+          width: 21%;
           aspect-ratio: 1.55;
           border: 2px solid #161616;
           box-shadow: .3rem .4rem 0 rgba(0,0,0,.15);
-          color: #151515;
-          font-family: Georgia, serif;
-          font-size: clamp(12px, 2.4vw, 36px);
-          font-weight: 900;
           transform: rotate(55deg);
         }
-        .chanceDeck { top: 14%; right: 11%; background: #f6a33b; }
-        .chestDeck { bottom: 14%; left: 11%; background: #86c9da; }
+        .chanceDeck {
+          top: 15%;
+          right: 12%;
+          background:
+            linear-gradient(135deg, transparent 46%, rgba(0,0,0,.13) 47% 53%, transparent 54%),
+            #f6a33b;
+        }
+        .chestDeck {
+          bottom: 15%;
+          left: 12%;
+          background:
+            linear-gradient(45deg, transparent 46%, rgba(0,0,0,.13) 47% 53%, transparent 54%),
+            #86c9da;
+        }
+        .deckLabel {
+          position: absolute;
+          z-index: 1;
+          color: rgba(17,17,17,.75);
+          font-family: Georgia, serif;
+          font-size: clamp(.42rem, .85vw, .82rem);
+          font-weight: 900;
+          letter-spacing: .05em;
+          text-transform: uppercase;
+          transform: rotate(55deg);
+        }
+        .chanceLabel { top: 22.5%; right: 16%; }
+        .chestLabel { bottom: 22%; left: 13%; }
         .boardSpace {
           --owner-color: transparent;
           position: relative;
+          z-index: 3;
           min-width: 0;
           min-height: 0;
           overflow: hidden;
           border: .5px solid #3e3e3e;
           background: #e9f2e7;
-          box-shadow: inset 0 0 0 0 var(--owner-color);
         }
         .boardSpace.ownedSpace {
-          box-shadow: inset 0 0 0 3px var(--owner-color);
-        }
-        .colorBand {
-          position: absolute;
-          inset: 0 0 auto;
-          height: 24%;
-          border-bottom: 1px solid #222;
+          box-shadow: inset 0 0 0 clamp(2px, .25vw, 3px) var(--owner-color);
         }
         .spaceInner {
           position: absolute;
@@ -187,36 +217,70 @@ export function MonopolyBoard({
           display: flex;
           flex-direction: column;
           align-items: center;
+          justify-content: space-between;
+          transform: translate(-50%, -50%) rotate(var(--rotation, 0deg));
+          transform-origin: center;
+          text-align: center;
+        }
+        .boardSpace.left .spaceInner,
+        .boardSpace.right .spaceInner {
+          width: 68%;
+          height: 147%;
+        }
+        .colorBar {
+          flex: 0 0 25%;
+          width: 100%;
+          border-bottom: 1px solid #222;
+          background: var(--property-color);
+        }
+        .spaceBody {
+          flex: 1;
+          width: 100%;
+          display: flex;
+          flex-direction: column;
+          align-items: center;
           justify-content: space-around;
           gap: 2%;
-          padding: 25% 5% 5%;
-          box-sizing: border-box;
-          text-align: center;
-          transform: translate(-50%, -50%) rotate(var(--space-rotation));
+          min-height: 0;
+          padding: 5% 4%;
         }
-        .boardSpace:not(.street) .spaceInner { padding-top: 7%; }
-        .spaceInner strong {
+        .spaceName {
           max-width: 100%;
-          font-size: clamp(5px, .58vw, 10px);
+          font-size: clamp(.23rem, .61vw, .66rem);
           font-weight: 900;
           line-height: 1.02;
           text-transform: uppercase;
           overflow-wrap: anywhere;
         }
-        .spaceInner span {
-          font-size: clamp(5px, .52vw, 9px);
+        .spacePrice {
+          font-size: clamp(.22rem, .53vw, .58rem);
           line-height: 1;
+          white-space: nowrap;
         }
         .spaceIcon {
+          display: grid;
+          place-items: center;
+          min-height: 0;
           font-family: Georgia, serif;
-          font-size: clamp(9px, 1.35vw, 22px);
+          font-size: clamp(.52rem, 1.45vw, 1.55rem);
+          font-weight: 900;
           line-height: .9;
         }
-        .go .spaceInner strong,
-        .jail .spaceInner strong,
-        .parking .spaceInner strong,
-        .go_to_jail .spaceInner strong {
-          font-size: clamp(6px, .72vw, 13px);
+        .boardSpace.chance .spaceIcon {
+          color: #e96732;
+          font-size: clamp(.78rem, 2.1vw, 2.25rem);
+          transform: rotate(-12deg);
+        }
+        .corner .spaceName {
+          font-size: clamp(.34rem, .9vw, .95rem);
+          line-height: .95;
+        }
+        .corner .spaceIcon {
+          font-size: clamp(.8rem, 2.25vw, 2.3rem);
+        }
+        .corner.go .spaceIcon {
+          color: #d52b2f;
+          transform: rotate(-12deg);
         }
         .mortgageMark {
           position: absolute;
@@ -228,7 +292,7 @@ export function MonopolyBoard({
           color: #991b1b;
           background: rgba(255,255,255,.86);
           font-weight: 1000;
-          transform: rotate(var(--space-rotation));
+          transform: rotate(var(--rotation, 0deg));
         }
         .buildingMark {
           position: absolute;
@@ -238,7 +302,7 @@ export function MonopolyBoard({
           color: #166534;
           font-size: clamp(6px, .72vw, 12px);
           letter-spacing: -1px;
-          transform: translateX(-50%) rotate(var(--space-rotation));
+          transform: translateX(-50%) rotate(var(--rotation, 0deg));
           white-space: nowrap;
         }
         .buildingMark.b5 { color: #b91c1c; font-size: clamp(8px, .95vw, 15px); }
@@ -267,10 +331,10 @@ export function MonopolyBoard({
         .spaceTokens .activeToken {
           box-shadow: 0 0 0 2px #facc15, 0 0 12px #facc15;
         }
-        @media (max-width: 760px) {
-          .spaceInner strong { font-size: clamp(3px, 1vw, 7px); }
-          .spaceInner span { font-size: clamp(3px, .9vw, 6px); }
-          .spaceIcon { font-size: clamp(6px, 2vw, 14px); }
+        @media (max-width: 620px) {
+          .spaceName { font-size: clamp(.17rem, 1vw, .4rem); }
+          .spacePrice { font-size: clamp(.16rem, .9vw, .36rem); }
+          .spaceIcon { font-size: clamp(.38rem, 2vw, .9rem); }
         }
       `}</style>
     </section>
