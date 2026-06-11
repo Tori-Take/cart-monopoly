@@ -12,7 +12,6 @@ import type { ControllerType, GameBundle, GameEvent, TokenId } from '../_types'
 import { TOKENS, getSpace } from '../gameData'
 import {
   addPlayerSlotAction,
-  advanceCpuAction,
   assignControllerAction,
   createNewGameAction,
   getHostSnapshotAction,
@@ -80,7 +79,6 @@ export function HostGame({
   const [newName, setNewName] = useState('PLAYER')
   const [newType, setNewType] = useState<ControllerType>('smartphone')
   const [newToken, setNewToken] = useState<TokenId>('ship')
-  const advancingRef = useRef(false)
   // 駒の表示位置 (実位置に向かって1マスずつ追従させる)
   const [displayPositions, setDisplayPositions] = useState<Record<string, number>>({})
   // 盤面下部に流すイベントバナー
@@ -144,30 +142,6 @@ export function HostGame({
     (player) => player.id === bundle.game.current_player_id,
   )
 
-  useEffect(() => {
-    if (
-      advancingRef.current ||
-      bundle.game.status !== 'playing' ||
-      currentPlayer?.controller_type !== 'cpu' ||
-      bundle.game.phase !== 'await_roll'
-    ) {
-      return
-    }
-    advancingRef.current = true
-    void advanceCpuAction(slug, bundle.game.id)
-      .then((result) => {
-        if (result.ok) setBundle(result.bundle)
-      })
-      .finally(() => {
-        advancingRef.current = false
-      })
-  }, [
-    bundle.game.id,
-    bundle.game.phase,
-    bundle.game.status,
-    currentPlayer?.controller_type,
-    slug,
-  ])
 
   // 卓が切り替わったらアニメーションとバナーを初期化
   useEffect(() => {

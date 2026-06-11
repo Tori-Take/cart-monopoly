@@ -905,6 +905,12 @@ export async function controllerActionAction(
           })
         } else if (action === 'trade_accept') respondTradeEngine(state, playerId, true)
         else if (action === 'trade_reject') respondTradeEngine(state, playerId, false)
+        else if (action === 'advance_cpu') {
+          const cp = state.players.find((p) => p.id === state.game.current_player_id)
+          if (!cp || cp.controller_type !== 'cpu') throw new Error('not_cpu_turn')
+          if (state.game.phase !== 'await_roll') throw new Error('wrong_phase')
+          runCpuTurns(state)
+        }
         else throw new Error('unknown_action')
       },
     )
