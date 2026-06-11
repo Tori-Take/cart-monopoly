@@ -288,14 +288,16 @@ async function persistState(
   }
 
   if (state.newEvents.length > 0) {
+    const now = Date.now()
     const { error: eventError } = await supabase.from('monopoly_events').insert(
-      state.newEvents.map((event) => ({
+      state.newEvents.map((event, i) => ({
         organization_id: organizationId,
         game_id: state.game.id,
         event_type: event.event_type,
         actor_player_id: event.actor_player_id,
         message: event.message.slice(0, 240),
         payload: event.payload ?? {},
+        created_at: new Date(now + i).toISOString(),
       })),
     )
     if (eventError) throw new Error(`persist_failed: ${eventError.message}`)
