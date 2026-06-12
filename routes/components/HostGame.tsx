@@ -335,6 +335,23 @@ export function HostGame({
             {currentPlayer?.display_name ?? 'GAME OVER'}
           </strong>
           {pendingSpace ? <span>{pendingSpace.name}</span> : null}
+          {banner ? (
+            <div
+              key={banner.id}
+              className="eventBanner"
+              style={{
+                '--actor-color':
+                  bundle.players.find(
+                    (player) => player.id === banner.actor_player_id,
+                  )?.color ?? '#efbf64',
+              } as CSSProperties}
+            >
+              <span className="bannerIcon">
+                {EVENT_ICONS[banner.event_type] ?? 'ℹ️'}
+              </span>
+              <span className="bannerText">{banner.message}</span>
+            </div>
+          ) : null}
         </div>
       )}
     </div>
@@ -354,25 +371,6 @@ export function HostGame({
             currentPlayerId={bundle.game.current_player_id}
             center={center}
           />
-        </div>
-        <div className="bannerSlot">
-          {banner ? (
-            <div
-              key={banner.id}
-              className="eventBanner"
-              style={{
-                '--actor-color':
-                  bundle.players.find(
-                    (player) => player.id === banner.actor_player_id,
-                  )?.color ?? '#efbf64',
-              } as CSSProperties}
-            >
-              <span className="bannerIcon">
-                {EVENT_ICONS[banner.event_type] ?? 'ℹ️'}
-              </span>
-              <span className="bannerText">{banner.message}</span>
-            </div>
-          ) : null}
         </div>
       </section>
 
@@ -724,7 +722,6 @@ export function HostGame({
         }
         .boardColumn { min-width: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; }
         .boardStage { position: relative; width: min(100%, 88vh); min-width: 0; }
-        .bannerSlot { width: min(100%, 88vh); min-height: 52px; display: flex; align-items: center; }
         .eventBanner {
           display: flex;
           align-items: center;
@@ -896,7 +893,7 @@ export function HostGame({
         @media (max-width: 1050px) {
           .hostShell { grid-template-columns: 1fr; }
           .boardStage { width: min(100%, 82vh); }
-          .bannerSlot  { width: min(100%, 82vh); }
+
           .hostPanel { max-height: none; overflow: visible; }
         }
       `}</style>
