@@ -3,13 +3,14 @@
 import {
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type CSSProperties,
 } from 'react'
 import { BackToAppHarbor } from '@/sdk/client'
 import type { ControllerType, GameBundle, GameEvent, TokenId } from '../_types'
-import { TOKENS, getSpace } from '../gameData'
+import { TOKENS, getCard, getSpace } from '../gameData'
 import {
   addPlayerSlotAction,
   assignControllerAction,
@@ -232,6 +233,20 @@ export function HostGame({
       ? getSpace(pending.spaceIndex)
       : null
 
+  // 現ターン中に引いたカードを表示する（turn イベント以降の最新 card イベント）
+  const lastCard = useMemo(() => {
+    const reversed = [...bundle.events].reverse()
+    for (const ev of reversed) {
+      if (ev.event_type === 'turn') break
+      if (ev.event_type === 'card') {
+        const deck = ev.payload.deck as 'chance' | 'chest'
+        const cardId = ev.payload.cardId as string
+        return getCard(deck, cardId)
+      }
+    }
+    return null
+  }, [bundle.events])
+
   async function run(task: () => Promise<{ ok: boolean; error?: string }>) {
     setBusy(true)
     setError(null)
@@ -327,6 +342,15 @@ export function HostGame({
       ) : (
         <div className="turnCenter">
           <p>{phaseLabel(bundle.game.phase)}</p>
+          {lastCard ? (
+            <div className={`drawnCard drawnCard--${lastCard.deck}`}>
+              <span className="drawnCard__label">
+                {lastCard.deck === 'chance' ? '? CHANCE' : '◇ COMMUNITY CHEST'}
+              </span>
+              <strong className="drawnCard__title">{lastCard.title}</strong>
+              <span className="drawnCard__detail">{lastCard.detail}</span>
+            </div>
+          ) : null}
           <div className="diceDisplay">
             <b>{bundle.game.dice_1 ?? '-'}</b>
             <b>{bundle.game.dice_2 ?? '-'}</b>
@@ -817,6 +841,20 @@ export function HostGame({
         .turnCenter p { width: 100%; margin: 0; color: #7f1d1d; font-size: 11px; font-weight: 900; letter-spacing: .14em; }
         .turnCenter > strong { width: 100%; font-size: clamp(17px, 2vw, 28px); }
         .turnCenter > span { width: 100%; font-size: 11px; }
+        .drawnCard {
+          width: 100%; display: grid; gap: 3px; padding: 8px 10px;
+          border-radius: 6px; border: 2px solid #171717;
+          background: rgba(247,240,221,.97); text-align: center;
+          animation: bannerIn 240ms cubic-bezier(.2,.9,.3,1.2);
+        }
+        .drawnCard--chance { border-top: 5px solid #e07800; }
+        .drawnCard--chest  { border-top: 5px solid #3a9bd5; }
+        .drawnCard__label {
+          font-size: 9px; font-weight: 900; letter-spacing: .12em;
+          color: #7f1d1d; text-transform: uppercase;
+        }
+        .drawnCard__title  { font-size: clamp(11px,1.3vw,16px); font-weight: 900; color: #181413; }
+        .drawnCard__detail { font-size: clamp(9px,1vw,13px); color: #4b3228; }
         .diceDisplay { display: flex; gap: 7px; }
         .diceDisplay b {
           width: 42px; aspect-ratio: 1; display: grid; place-items: center;
