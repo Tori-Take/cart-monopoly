@@ -109,6 +109,8 @@ export function HostGame({
   const [newToken, setNewToken] = useState<TokenId>('ship')
   // 駒の表示位置 (実位置に向かって1マスずつ追従させる)
   const [displayPositions, setDisplayPositions] = useState<Record<string, number>>({})
+  // サイドバーのQRをクリックした際に中央へ大きく表示するオーバーレイ
+  const [qrZoom, setQrZoom] = useState(false)
   // 盤面下部に流すイベントバナー
   const [banner, setBanner] = useState<GameEvent | null>(null)
   const eventQueueRef = useRef<GameEvent[]>([])
@@ -361,6 +363,16 @@ export function HostGame({
     await run(() => convertPlayerToCpuAction(slug, bundle.game.id, playerId))
   }
 
+  // QR拡大オーバーレイは Escape キーでも閉じられるようにする
+  useEffect(() => {
+    if (!qrZoom) return
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setQrZoom(false)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [qrZoom])
+
   const center = (
     <div className="centerConsole">
       <div className="brandPlate">
@@ -429,6 +441,35 @@ export function HostGame({
   return (
     <main className="hostShell">
       <BackToAppHarbor label="アプリ一覧へ" />
+
+      {qrZoom && joinUrl ? (
+        <div
+          className="qrZoomOverlay"
+          role="dialog"
+          aria-modal="true"
+          aria-label="接続用QRコード"
+          onClick={() => setQrZoom(false)}
+        >
+          <div className="qrZoomCard" onClick={(event) => event.stopPropagation()}>
+            <QrCode
+              value={joinUrl}
+              label="スマートフォン接続用QRコード"
+              className="qrZoomImg"
+            />
+            <div className="qrZoomCaption">
+              <b>QRを読み込んで接続</b>
+              <span>接続後、ホストがプレイヤーへ割り当てます</span>
+            </div>
+            <button
+              type="button"
+              className="qrZoomClose"
+              onClick={() => setQrZoom(false)}
+            >
+              閉じる
+            </button>
+          </div>
+        </div>
+      ) : null}
       <section className="boardColumn">
         <div className="boardStage">
           <MonopolyBoard
@@ -579,13 +620,20 @@ export function HostGame({
             <span className="sectionLabel">🔌 端末の再接続・追加</span>
             {joinUrl ? (
               <div className="reconnectQr">
-                <QrCode
-                  value={joinUrl}
-                  label="参加用QRコード"
-                  className="reconnectQrImg"
-                />
+                <button
+                  type="button"
+                  className="reconnectQrButton"
+                  onClick={() => setQrZoom(true)}
+                  title="クリックで拡大表示"
+                >
+                  <QrCode
+                    value={joinUrl}
+                    label="参加用QRコード"
+                    className="reconnectQrImg"
+                  />
+                </button>
                 <p className="muted">
-                  スマホでQRを読み込み、下のリストで席に割り当てます。
+                  QRをクリックで拡大。スマホで読み込み、下のリストで席に割り当てます。
                 </p>
               </div>
             ) : null}
@@ -1066,8 +1114,36 @@ export function HostGame({
         .presenceDot.off { background: #6b7280; }
         .reconnectCard { display: grid; gap: 4px; }
         .reconnectQr { display: flex; align-items: center; gap: 12px; margin: 6px 0; }
-        .reconnectQrImg { width: clamp(72px, 18vw, 110px); height: auto; border-radius: 6px; }
+        .reconnectQrButton {
+          padding: 0; border: 0; background: none; cursor: pointer; line-height: 0;
+          border-radius: 6px; transition: transform .12s ease, box-shadow .12s ease;
+        }
+        .reconnectQrButton:hover { transform: scale(1.04); box-shadow: 0 0 0 3px rgba(239,191,100,.6); }
+        .reconnectQrImg { width: clamp(72px, 18vw, 110px); height: auto; border-radius: 6px; display: block; }
         .reconnectQr .muted { margin: 0; }
+
+        .qrZoomOverlay {
+          position: fixed; inset: 0; z-index: 1000;
+          display: flex; align-items: center; justify-content: center;
+          padding: 24px; background: rgba(8,10,8,.82);
+          backdrop-filter: blur(3px);
+        }
+        .qrZoomCard {
+          display: flex; flex-direction: column; align-items: center; gap: 16px;
+          padding: 28px 28px 22px; border: 3px solid #171717; border-radius: 14px;
+          background: rgba(247,240,221,.97); color: #181413;
+          box-shadow: 0 24px 60px rgba(0,0,0,.5);
+          max-width: min(90vw, 560px);
+        }
+        .qrZoomImg { width: min(70vw, 70vh, 440px); height: auto; }
+        .qrZoomCaption { display: grid; gap: 6px; text-align: center; }
+        .qrZoomCaption b { font-size: clamp(16px, 2.4vw, 24px); }
+        .qrZoomCaption span { font-size: clamp(11px, 1.4vw, 15px); color: #4a463c; }
+        .qrZoomClose {
+          padding: 8px 26px; border: 2px solid #171717; border-radius: 8px;
+          background: #efbf64; color: #181413; font-weight: 900; cursor: pointer;
+        }
+        .qrZoomClose:hover { background: #f3cd7f; }
         .playerMoney { color: #86efac; font-family: Georgia, serif; font-size: 16px; }
         .mini { min-height: 30px; padding: 0 7px; font-size: 11px; }
         .danger { background: #fecaca; }
