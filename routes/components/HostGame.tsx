@@ -9,11 +9,18 @@ import {
   type CSSProperties,
 } from 'react'
 import { BackToAppHarbor } from '@/sdk/client'
-import type { ControllerType, GameBundle, GameEvent, TokenId } from '../_types'
+import type {
+  Controller,
+  ControllerType,
+  GameBundle,
+  GameEvent,
+  TokenId,
+} from '../_types'
 import { TOKENS, getCard, getSpace } from '../gameData'
 import {
   addPlayerSlotAction,
   assignControllerAction,
+  convertPlayerToCpuAction,
   createNewGameAction,
   getHostSnapshotAction,
   hostCorrectionAction,
@@ -29,6 +36,26 @@ import { TokenPiece } from './TokenPiece'
 
 function money(value: number) {
   return `$${value.toLocaleString('en-US')}`
+}
+
+// スマホが last_seen_at を更新しなくなってから「オフライン」と判定するまでの猶予。
+// スマホは約850msごとにポーリングするため、6秒あれば取りこぼしは起きない。
+const PRESENCE_TIMEOUT_MS = 6000
+
+function assignedController(controllers: Controller[], playerId: string) {
+  return controllers.find(
+    (controller) =>
+      controller.assigned_player_id === playerId &&
+      controller.status === 'assigned',
+  )
+}
+
+function isControllerOnline(controller: Controller | undefined): boolean {
+  if (!controller?.last_seen_at) return false
+  return (
+    Date.now() - new Date(controller.last_seen_at).getTime() <
+    PRESENCE_TIMEOUT_MS
+  )
 }
 
 function phaseLabel(phase: string) {
@@ -224,9 +251,17 @@ export function HostGame({
   const smartphonePlayers = bundle.players.filter(
     (player) => player.controller_type === 'smartphone',
   )
+  // 対局中の再接続では CPU 化された席も割り当て対象にする（割当時にスマホへ戻る）
+  const assignablePlayers = bundle.players.filter(
+    (player) =>
+      !player.bankrupt &&
+      (player.controller_type === 'smartphone' ||
+        player.controller_type === 'cpu'),
+  )
   const waitingControllers = bundle.controllers.filter(
     (controller) => controller.status === 'waiting',
   )
+  const inPlay = bundle.game.status !== 'lobby' && bundle.game.status !== 'finished'
   const pending = bundle.game.pending_action
   const pendingSpace =
     pending.kind === 'purchase' || pending.kind === 'auction'
@@ -314,6 +349,16 @@ export function HostGame({
         value: Number(raw),
       }),
     )
+  }
+
+  async function convertToCpu(playerId: string, name: string) {
+    if (
+      !window.confirm(
+        `${name} をCPUに切り替えますか？\n離脱・電池切れのプレイヤーの代わりにCPUが操作を続けます。`,
+      )
+    )
+      return
+    await run(() => convertPlayerToCpuAction(slug, bundle.game.id, playerId))
   }
 
   const center = (
@@ -529,6 +574,71 @@ export function HostGame({
           </>
         ) : null}
 
+        {inPlay ? (
+          <section className="panelCard reconnectCard">
+            <span className="sectionLabel">🔌 端末の再接続・追加</span>
+            {joinUrl ? (
+              <div className="reconnectQr">
+                <QrCode
+                  value={joinUrl}
+                  label="参加用QRコード"
+                  className="reconnectQrImg"
+                />
+                <p className="muted">
+                  スマホでQRを読み込み、下のリストで席に割り当てます。
+                </p>
+              </div>
+            ) : null}
+            {waitingControllers.length === 0 ? (
+              <p className="muted">接続待ちの端末はありません。</p>
+            ) : (
+              waitingControllers.map((controller) => (
+                <div className="assignmentRow" key={controller.id}>
+                  <strong>{controller.label}</strong>
+                  <select
+                    value={
+                      assignments[controller.id] ??
+                      assignablePlayers[0]?.id ??
+                      ''
+                    }
+                    onChange={(event) =>
+                      setAssignments((current) => ({
+                        ...current,
+                        [controller.id]: event.target.value,
+                      }))
+                    }
+                  >
+                    {assignablePlayers.map((player) => (
+                      <option key={player.id} value={player.id}>
+                        {player.display_name}
+                        {player.controller_type === 'cpu' ? '（CPU解除）' : ''}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    type="button"
+                    disabled={busy || assignablePlayers.length === 0}
+                    onClick={() =>
+                      run(() =>
+                        assignControllerAction(
+                          slug,
+                          bundle.game.id,
+                          controller.id,
+                          assignments[controller.id] ??
+                            assignablePlayers[0]?.id ??
+                            '',
+                        ),
+                      )
+                    }
+                  >
+                    割当
+                  </button>
+                </div>
+              ))
+            )}
+          </section>
+        ) : null}
+
         <section className="panelCard playerList">
           <span className="sectionLabel">PLAYERS</span>
           {bundle.players.map((player) => {
@@ -538,6 +648,14 @@ export function HostGame({
             const propertyCount = bundle.properties.filter(
               (property) => property.owner_player_id === player.id,
             ).length
+            const isSmartphone = player.controller_type === 'smartphone'
+            const online =
+              isSmartphone &&
+              isControllerOnline(
+                assignedController(bundle.controllers, player.id),
+              )
+            const showCpuButton =
+              inPlay && isSmartphone && !player.bankrupt
             return (
               <article
                 key={player.id}
@@ -550,10 +668,19 @@ export function HostGame({
               >
                 <TokenPiece tokenId={player.token_id} size={48} />
                 <div className="playerIdentity">
-                  <strong>{player.display_name}</strong>
+                  <strong>
+                    {isSmartphone ? (
+                      <span
+                        className={`presenceDot ${online ? 'on' : 'off'}`}
+                        title={online ? 'オンライン' : 'オフライン'}
+                      />
+                    ) : null}
+                    {player.display_name}
+                  </strong>
                   <span>
                     {player.controller_type.toUpperCase()}
                     {assigned ? ` / ${assigned.label}` : ''}
+                    {isSmartphone && !online ? ' / 切断中' : ''}
                   </span>
                   <small>
                     {getSpace(player.position).name} / {propertyCount} deeds
@@ -593,6 +720,19 @@ export function HostGame({
                     >
                       位置
                     </button>
+                    {showCpuButton ? (
+                      <button
+                        type="button"
+                        className={`mini ${online ? '' : 'danger'}`}
+                        disabled={busy}
+                        onClick={() =>
+                          convertToCpu(player.id, player.display_name)
+                        }
+                        title="この席をCPUに切り替えて続行"
+                      >
+                        🤖CPU
+                      </button>
+                    ) : null}
                   </div>
                 )}
               </article>
@@ -918,6 +1058,16 @@ export function HostGame({
         .playerIdentity strong, .playerIdentity span, .playerIdentity small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .playerIdentity span { color: #efbf64; font-size: 9px; font-weight: 900; }
         .playerIdentity small { color: #a99b9f; font-size: 10px; }
+        .presenceDot {
+          display: inline-block; width: 8px; height: 8px; margin-right: 6px;
+          border-radius: 50%; vertical-align: middle;
+        }
+        .presenceDot.on  { background: #4ade80; box-shadow: 0 0 5px #4ade80; }
+        .presenceDot.off { background: #6b7280; }
+        .reconnectCard { display: grid; gap: 4px; }
+        .reconnectQr { display: flex; align-items: center; gap: 12px; margin: 6px 0; }
+        .reconnectQrImg { width: clamp(72px, 18vw, 110px); height: auto; border-radius: 6px; }
+        .reconnectQr .muted { margin: 0; }
         .playerMoney { color: #86efac; font-family: Georgia, serif; font-size: 16px; }
         .mini { min-height: 30px; padding: 0 7px; font-size: 11px; }
         .danger { background: #fecaca; }

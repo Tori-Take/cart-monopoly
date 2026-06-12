@@ -13,6 +13,7 @@ import {
   connectControllerAction,
   controllerActionAction,
   getControllerStateAction,
+  leaveControllerAction,
 } from '../server/actions'
 import { TokenPiece } from './TokenPiece'
 
@@ -233,11 +234,31 @@ export function MobileController({
     if (!result.ok) setError(errorLabel(result.error))
   }
 
-  function disconnectLocal() {
-    if (!window.confirm('この端末の接続情報を消去しますか？')) return
+  async function disconnectLocal() {
+    if (
+      !window.confirm(
+        'この端末の接続を解除しますか？\nホストが別の端末を割り当てられるようになります。',
+      )
+    )
+      return
+    const current = identity
     setIdentity(null)
     setState(null)
     window.localStorage.removeItem(storageKey)
+    if (current) {
+      // サーバー側でも席を解放する（失敗してもローカルは解除済み）
+      try {
+        await leaveControllerAction(
+          slug,
+          code,
+          current.controllerId,
+          current.controllerToken,
+          current.gameId,
+        )
+      } catch {
+        /* ローカル解除済みのため無視 */
+      }
+    }
   }
 
   function proposeTrade() {
@@ -261,7 +282,11 @@ export function MobileController({
           <h1>MONOPOLY</h1>
         </div>
         {identity ? (
-          <button type="button" className="ghostButton" onClick={disconnectLocal}>
+          <button
+            type="button"
+            className="ghostButton"
+            onClick={() => void disconnectLocal()}
+          >
             端末解除
           </button>
         ) : null}
