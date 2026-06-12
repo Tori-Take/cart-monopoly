@@ -811,10 +811,11 @@ export function HostGame({
           transform: rotate(35deg);
           box-shadow: 6px 8px 0 rgba(0,0,0,.18);
         }
-        .boardQr { width: clamp(120px, 18vw, 220px); height: auto; }
+        .boardQr { width: clamp(160px, 28vw, 360px); height: auto; }
+        .lobbyCenter { flex-direction: column; align-items: center; text-align: center; }
         .lobbyCenter div { display: grid; gap: 6px; }
-        .lobbyCenter b { font-size: clamp(12px, 1.4vw, 18px); }
-        .lobbyCenter span { max-width: 220px; font-size: clamp(9px, 1vw, 13px); }
+        .lobbyCenter b { font-size: clamp(13px, 1.6vw, 20px); }
+        .lobbyCenter span { max-width: 260px; font-size: clamp(9px, 1.1vw, 14px); }
         .turnCenter { min-width: 230px; justify-content: center; flex-wrap: wrap; text-align: center; }
         .turnCenter p { width: 100%; margin: 0; color: #7f1d1d; font-size: 11px; font-weight: 900; letter-spacing: .14em; }
         .turnCenter > strong { width: 100%; font-size: clamp(17px, 2vw, 28px); }
