@@ -276,8 +276,13 @@ export function MonopolyBoard({
           border: .5px solid #3e3e3e;
           background: #e9f2e7;
         }
-        .boardSpace.ownedSpace {
-          box-shadow: inset 0 0 0 clamp(2px, .25vw, 3px) var(--owner-color);
+        .boardSpace.ownedSpace::after {
+          content: '';
+          position: absolute;
+          inset: 0;
+          z-index: 20;
+          border: clamp(2px, .35vw, 4px) solid var(--owner-color);
+          pointer-events: none;
         }
         .spaceInner {
           position: absolute;
