@@ -9,6 +9,7 @@ import type {
   Game,
   GameBundle,
   GameEvent,
+  GameSpeed,
   Player,
   PropertyState,
   PublicGameState,
@@ -81,10 +82,12 @@ function normalizeGame(row: Record<string, unknown>) {
       row.pending_action && typeof row.pending_action === 'object'
         ? row.pending_action
         : {},
-    settings:
-      row.settings && typeof row.settings === 'object'
-        ? row.settings
-        : { startingMoney: 1500, salary: 200 },
+    settings: {
+      startingMoney: 1500,
+      salary: 200,
+      speed: 'normal' as const,
+      ...(row.settings && typeof row.settings === 'object' ? row.settings : {}),
+    },
   } as Game
 }
 
@@ -737,6 +740,37 @@ export async function setPauseAction(
     .eq('organization_id', ctx.actor.organizationId)
     .eq('id', gameId)
     .in('status', ['playing', 'paused'])
+  return error
+    ? { ok: false as const, error: error.message }
+    : { ok: true as const }
+}
+
+const SPEED_VALUES: GameSpeed[] = ['very_slow', 'slow', 'normal', 'fast', 'very_fast']
+
+export async function setGameSpeedAction(
+  slug: string,
+  gameId: string,
+  speed: string,
+) {
+  const ctx = await requireHost(slug)
+  if (!SPEED_VALUES.includes(speed as GameSpeed)) {
+    return { ok: false as const, error: 'invalid_speed' }
+  }
+  const supabase = getAdminSupabase()
+  const { data: row } = await supabase
+    .from('monopoly_games')
+    .select('settings')
+    .eq('organization_id', ctx.actor.organizationId)
+    .eq('id', gameId)
+    .maybeSingle()
+  if (!row) return { ok: false as const, error: 'game_not_found' }
+  const current =
+    row.settings && typeof row.settings === 'object' ? row.settings : {}
+  const { error } = await supabase
+    .from('monopoly_games')
+    .update({ settings: { startingMoney: 1500, salary: 200, ...current, speed } })
+    .eq('organization_id', ctx.actor.organizationId)
+    .eq('id', gameId)
   return error
     ? { ok: false as const, error: error.message }
     : { ok: true as const }
