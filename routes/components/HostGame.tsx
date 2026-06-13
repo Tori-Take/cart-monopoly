@@ -428,6 +428,12 @@ export function HostGame({
     return () => window.removeEventListener('keydown', onKey)
   }, [qrZoom])
 
+  // 駒が実位置へ歩き終えてからカードを表示する（到着前のネタバレ防止）
+  const tokenArrived =
+    !currentPlayer ||
+    (displayPositions[currentPlayer.id] ?? currentPlayer.position) ===
+      currentPlayer.position
+
   const center = (
     <div className="centerConsole">
       <div className="brandPlate">
@@ -454,7 +460,7 @@ export function HostGame({
       ) : (
         <div className="turnCenter">
           <p>{phaseLabel(bundle.game.phase)}</p>
-          {!pendingSpace && lastCard ? (
+          {!pendingSpace && lastCard && tokenArrived ? (
             <div className="rcardSlot rcardSlot--center">
               <RichCard card={lastCard} />
               {bundle.game.phase === 'await_card_move' ? (
@@ -471,7 +477,7 @@ export function HostGame({
           <strong style={{ color: currentPlayer?.color }}>
             {currentPlayer?.display_name ?? 'GAME OVER'}
           </strong>
-          {pendingSpace ? (
+          {pendingSpace && tokenArrived ? (
             <div className="rcardSlot rcardSlot--center">
               <RichCard space={pendingSpace} />
             </div>
