@@ -138,13 +138,12 @@ export function RichCard({ space, card }: { space?: BoardSpace; card?: GameCard 
 export const RICH_CARD_CSS = `
   .rcard {
     position: relative;
-    container-type: inline-size;
     width: 100%;
     aspect-ratio: 2.5 / 3.5;
     overflow: hidden;
-    padding: 4cqw;
+    padding: 12px;
     border: 1px solid rgba(24,20,19,.28);
-    border-radius: 11px;
+    border-radius: 12px;
     box-shadow: 0 12px 28px rgba(0,0,0,.26);
     background:
       repeating-linear-gradient(0deg, rgba(90,70,40,.025) 0 1px, transparent 1px 4px),
@@ -157,61 +156,60 @@ export const RICH_CARD_CSS = `
     position: absolute;
     inset: 5px;
     border: 1px solid rgba(24,20,19,.28);
-    border-radius: 7px;
+    border-radius: 8px;
     content: "";
     pointer-events: none;
   }
-  .rcard--property { }
   .rcard__band {
     display: grid;
-    min-height: 22cqw;
+    min-height: 70px;
     place-items: center;
-    padding: 3cqw;
+    padding: 9px;
     border: 2px solid #181413;
     text-align: center;
   }
   .rcard__band small {
     display: block;
-    margin-bottom: 1cqw;
-    font-size: clamp(7px, 2.6cqw, 12px);
+    margin-bottom: 4px;
+    font-size: 10px;
     font-weight: 900;
     letter-spacing: .18em;
   }
   .rcard__band h2 {
     margin: 0;
     font-family: Georgia, "Times New Roman", serif;
-    font-size: clamp(14px, 6.4cqw, 26px);
+    font-size: 20px;
     font-weight: 900;
-    line-height: .95;
+    line-height: .98;
     text-transform: uppercase;
   }
   .rcard__body {
     display: flex;
     flex: 1;
     flex-direction: column;
-    padding: 3.5cqw 2cqw 1.5cqw;
+    padding: 12px 8px 5px;
   }
   .rcard__price {
-    margin: 0 0 3cqw;
+    margin: 0 0 10px;
     font-family: Georgia, "Times New Roman", serif;
-    font-size: clamp(11px, 3.9cqw, 17px);
+    font-size: 15px;
     font-weight: 700;
     text-align: center;
   }
   .rcard__rents {
     display: grid;
-    gap: 1cqw;
+    gap: 4px;
     margin: 0;
     font-family: Georgia, "Times New Roman", serif;
-    font-size: clamp(10px, 3.5cqw, 16px);
+    font-size: 13px;
   }
-  .rcard__rents div { display: flex; justify-content: space-between; gap: 6px; }
+  .rcard__rents div { display: flex; justify-content: space-between; gap: 8px; }
   .rcard__rents dt, .rcard__rents dd { margin: 0; }
   .rcard__note {
     margin: auto 0 0;
-    padding-top: 2.4cqw;
+    padding-top: 8px;
     border-top: 1px solid rgba(24,20,19,.22);
-    font-size: clamp(8px, 2.7cqw, 12px);
+    font-size: 10px;
     line-height: 1.45;
     text-align: center;
     color: #3d2417;
@@ -223,9 +221,9 @@ export const RICH_CARD_CSS = `
   .rcard--event-chance { --rcard-event: #ef8c35; }
   .rcard--event-chest  { --rcard-event: #79b9c8; }
   .rcard__kicker {
-    margin: 2.5cqw 0 0;
+    margin: 10px 0 0;
     color: color-mix(in srgb, var(--rcard-event, #ef8c35) 80%, #3d2417);
-    font-size: clamp(9px, 3.2cqw, 14px);
+    font-size: 12px;
     font-weight: 900;
     letter-spacing: .22em;
   }
@@ -237,30 +235,30 @@ export const RICH_CARD_CSS = `
   .rcard__icon {
     display: grid;
     place-items: center;
-    width: 26cqw;
-    aspect-ratio: 1;
-    margin: 3cqw auto 2cqw;
+    width: 96px;
+    height: 96px;
+    margin: 14px auto 8px;
     border: 3px solid #181413;
     border-radius: 50%;
     background: var(--rcard-event, #ef8c35);
     color: #181413;
     font-family: Georgia, serif;
-    font-size: clamp(34px, 15cqw, 60px);
+    font-size: 58px;
     font-weight: 900;
     transform: rotate(-6deg);
     box-shadow: 4px 5px 0 #181413;
   }
   .rcard__event-title {
-    margin: 2.5cqw 3cqw 0;
+    margin: 10px 12px 0;
     font-family: Georgia, "Yu Mincho", serif;
-    font-size: clamp(16px, 6.8cqw, 28px);
+    font-size: 24px;
     line-height: 1.25;
   }
   .rcard__detail {
-    margin: 0 4cqw 4cqw;
-    padding-top: 3cqw;
+    margin: 0 14px 16px;
+    padding-top: 12px;
     border-top: 1px solid rgba(24,20,19,.22);
-    font-size: clamp(10px, 3.5cqw, 15px);
+    font-size: 14px;
     font-weight: 700;
     line-height: 1.6;
   }
