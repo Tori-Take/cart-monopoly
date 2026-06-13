@@ -81,7 +81,7 @@ export function MobileController({
   const storageKey = `monopoly-controller:${slug}:${code}:${initialGameId ?? ''}`
   const [identity, setIdentity] = useState<Identity | null>(null)
   const [state, setState] = useState<PublicGameState | null>(null)
-  const [label, setLabel] = useState('MY PHONE')
+  const [label, setLabel] = useState('')
   const [error, setError] = useState<string | null>(
     preview.ok ? null : preview.error,
   )
