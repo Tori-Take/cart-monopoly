@@ -1152,7 +1152,7 @@ export function HostGame({
         .auctionStatus__bid { font-size: clamp(18px, 2.2vw, 30px); color: #7f1d1d; font-family: Georgia, serif; }
         .auctionStatus__bidder { font-size: 11px; color: #181413; }
         .rcardSlot { width: 100%; display: flex; justify-content: center; }
-        .rcardSlot--center { max-width: 220px; margin: 4px auto; }
+        .rcardSlot--center { max-width: 340px; margin: 6px auto; }
         .diceDisplay { display: flex; gap: 7px; }
         .diceDisplay b {
           width: 42px; aspect-ratio: 1; display: grid; place-items: center;
