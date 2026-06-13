@@ -13,6 +13,7 @@ import type {
   Controller,
   ControllerType,
   GameBundle,
+  GameCard,
   GameEvent,
   GameSpeed,
   TokenId,
@@ -22,7 +23,9 @@ import { TOKENS, getCard, getSpace } from '../gameData'
 import { RichCard, RICH_CARD_CSS } from './RichCard'
 import {
   addPlayerSlotAction,
+  advanceCpuAction,
   assignControllerAction,
+  completeTurnPresentationAction,
   convertPlayerToCpuAction,
   createNewGameAction,
   getHostSnapshotAction,
@@ -72,9 +75,35 @@ function phaseLabel(phase: string) {
       await_purchase: '購入判断',
       auction: '競売',
       manage_debt: '資産整理',
+      presenting: '演出中',
       finished: 'ゲーム終了',
     }[phase] ?? phase
   )
+}
+
+function cardFromEvent(event: GameEvent): GameCard | null {
+  if (event.event_type !== 'card') return null
+  const cardId =
+    typeof event.payload.cardId === 'string' ? event.payload.cardId : ''
+  const payloadDeck = event.payload.deck
+  const deck =
+    payloadDeck === 'chance' || payloadDeck === 'chest'
+      ? payloadDeck
+      : cardId.startsWith('cc-')
+        ? 'chest'
+        : cardId.startsWith('ch-')
+          ? 'chance'
+          : null
+  return deck && cardId ? getCard(deck, cardId) : null
+}
+
+function latestCardEventInTurn(events: GameEvent[]): GameEvent | null {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index]
+    if (event.event_type === 'turn') break
+    if (event.event_type === 'card' && cardFromEvent(event)) return event
+  }
+  return null
 }
 
 // サイコロ等のコメントが出てから駒が歩き出すまでの待ち時間 (ms)。
@@ -141,12 +170,21 @@ export function HostGame({
   const [displayPositions, setDisplayPositions] = useState<Record<string, number>>({})
   // サイドバーのQRをクリックした際に中央へ大きく表示するオーバーレイ
   const [qrZoom, setQrZoom] = useState(false)
+  // 操作パネルを隠し、共有画面では盤面を最大化する
+  const [boardFocus, setBoardFocus] = useState(false)
   // 盤面下部に流すイベントバナー
   const [banner, setBanner] = useState<GameEvent | null>(null)
+  const [activeCard, setActiveCard] = useState<{
+    eventId: string
+    playerId: string | null
+    card: GameCard
+    announced: boolean
+  } | null>(null)
   const eventQueueRef = useRef<GameEvent[]>([])
   const lastEventIdRef = useRef<string | null>(null)
   const eventsInitializedRef = useRef(false)
   const bannerTimerRef = useRef<number | null>(null)
+  const turnFlowBusyRef = useRef(false)
   // 新着イベント（サイコロ等のコメント）が出てから駒が動き出すまでの「読む間」。
   // この時刻まで駒の歩行を止め、先にコメントを読ませる。
   const moveGateRef = useRef(0)
@@ -169,8 +207,7 @@ export function HostGame({
     const next = eventQueueRef.current.shift() ?? null
     setBanner(next)
     if (next) {
-      const base = eventQueueRef.current.length >= 3 ? 2000 : 3400
-      const delay = Math.round(base * speedFactorRef.current)
+      const delay = Math.round(3000 * speedFactorRef.current)
       bannerTimerRef.current = window.setTimeout(showNextBanner, delay)
     } else {
       bannerTimerRef.current = null
@@ -231,6 +268,7 @@ export function HostGame({
       bannerTimerRef.current = null
     }
     setBanner(null)
+    setActiveCard(null)
     setDisplayPositions({})
   }, [bundle.game.id])
 
@@ -283,6 +321,21 @@ export function HostGame({
     if (!eventsInitializedRef.current) {
       eventsInitializedRef.current = true
       lastEventIdRef.current = events[events.length - 1]?.id ?? null
+      if (
+        bundle.game.phase === 'presenting' ||
+        bundle.game.phase === 'await_card_move'
+      ) {
+        const latestCardEvent = latestCardEventInTurn(events)
+        const card = latestCardEvent ? cardFromEvent(latestCardEvent) : null
+        if (latestCardEvent && card) {
+          setActiveCard({
+            eventId: latestCardEvent.id,
+            playerId: latestCardEvent.actor_player_id,
+            card,
+            announced: true,
+          })
+        }
+      }
       return
     }
     const lastId = lastEventIdRef.current
@@ -294,12 +347,139 @@ export function HostGame({
     lastEventIdRef.current = events[events.length - 1]?.id ?? lastId
     // コメントを読む時間を確保するため、新着イベント直後は駒の歩行を一拍止める
     moveGateRef.current = Date.now() + MOVE_READ_DELAY * speedFactorRef.current
-    eventQueueRef.current.push(...fresh)
-    if (eventQueueRef.current.length > 8) {
-      eventQueueRef.current = eventQueueRef.current.slice(-6)
+    const latestCardEvent = [...fresh]
+      .reverse()
+      .find((event) => event.event_type === 'card')
+    const card = latestCardEvent ? cardFromEvent(latestCardEvent) : null
+    if (latestCardEvent && card) {
+      setActiveCard({
+        eventId: latestCardEvent.id,
+        playerId: latestCardEvent.actor_player_id,
+        card,
+        announced: false,
+      })
     }
+    eventQueueRef.current.push(...fresh)
     if (bannerTimerRef.current === null) showNextBanner()
-  }, [bundle.events, showNextBanner])
+  }, [bundle.events, bundle.game.phase, showNextBanner])
+
+  const animationTargetKey = bundle.players
+    .map((player) => `${player.id}:${player.position}`)
+    .join('|')
+  const allTokensSettled = bundle.players.every(
+    (player) => displayPositions[player.id] === player.position,
+  )
+  const activeCardPlayer = activeCard
+    ? bundle.players.find((player) => player.id === activeCard.playerId)
+    : null
+  const activeCardTokenSettled =
+    !activeCardPlayer ||
+    displayPositions[activeCardPlayer.id] === activeCardPlayer.position
+
+  useEffect(() => {
+    if (!activeCard || banner?.id !== activeCard.eventId) return
+    setActiveCard((current) =>
+      current?.eventId === activeCard.eventId
+        ? current.announced
+          ? current
+          : { ...current, announced: true }
+        : current,
+    )
+  }, [activeCard, banner])
+
+  // カードを引いた駒が到着してから、内容を読む時間を必ず確保する。
+  useEffect(() => {
+    if (
+      !activeCard ||
+      !activeCard.announced ||
+      !activeCardTokenSettled ||
+      bundle.game.phase === 'await_card_move'
+    ) {
+      return
+    }
+    const timer = window.setTimeout(
+      () =>
+        setActiveCard((current) =>
+          current?.eventId === activeCard.eventId ? null : current,
+        ),
+      Math.round(3000 * speedFactor),
+    )
+    return () => window.clearTimeout(timer)
+  }, [
+    activeCard,
+    activeCardTokenSettled,
+    bundle.game.phase,
+    speedFactor,
+  ])
+
+  // 前ターンのコメントと駒移動、次ターンの告知を順番に消化してから操作を解禁する。
+  useEffect(() => {
+    if (
+      bundle.game.status !== 'playing' ||
+      !allTokensSettled ||
+      activeCard !== null ||
+      banner !== null ||
+      eventQueueRef.current.length > 0 ||
+      bannerTimerRef.current !== null
+    ) {
+      return
+    }
+
+    const player = bundle.players.find(
+      (item) => item.id === bundle.game.current_player_id,
+    )
+    const shouldCompletePresentation = bundle.game.phase === 'presenting'
+    const shouldAdvanceCpu =
+      bundle.game.phase === 'await_roll' &&
+      player?.controller_type === 'cpu'
+    if (!shouldCompletePresentation && !shouldAdvanceCpu) return
+
+    const wait = Math.max(
+      250,
+      moveGateRef.current - Date.now() + 250,
+    )
+    const timer = window.setTimeout(async () => {
+      if (
+        turnFlowBusyRef.current ||
+        eventQueueRef.current.length > 0 ||
+        bannerTimerRef.current !== null
+      ) {
+        return
+      }
+      turnFlowBusyRef.current = true
+      try {
+        const result = shouldCompletePresentation
+          ? await completeTurnPresentationAction(
+              slug,
+              bundle.game.id,
+              bundle.game.version,
+            )
+          : await advanceCpuAction(slug, bundle.game.id, player?.id ?? '')
+        if (result.ok) {
+          setBundle(result.bundle)
+        } else {
+          await refresh()
+        }
+      } catch {
+        await refresh()
+      } finally {
+        turnFlowBusyRef.current = false
+      }
+    }, wait)
+    return () => window.clearTimeout(timer)
+  }, [
+    allTokensSettled,
+    activeCard,
+    animationTargetKey,
+    banner,
+    bundle.game.current_player_id,
+    bundle.game.id,
+    bundle.game.phase,
+    bundle.game.status,
+    bundle.game.version,
+    refresh,
+    slug,
+  ])
 
   const availableTokens = TOKENS.filter(
     (token) => !bundle.players.some((player) => player.token_id === token.id),
@@ -330,14 +510,19 @@ export function HostGame({
     const reversed = [...bundle.events].reverse()
     for (const ev of reversed) {
       if (ev.event_type === 'turn') break
-      if (ev.event_type === 'card') {
-        const deck = ev.payload.deck as 'chance' | 'chest'
-        const cardId = ev.payload.cardId as string
-        return getCard(deck, cardId)
-      }
+      const card = cardFromEvent(ev)
+      if (card) return card
     }
     return null
   }, [bundle.events])
+  const visibleCard =
+    activeCard?.card ??
+    (bundle.game.phase === 'await_card_move' ? lastCard : null)
+  const visibleCardTokenArrived = activeCard
+    ? activeCardTokenSettled
+    : !currentPlayer ||
+      (displayPositions[currentPlayer.id] ?? currentPlayer.position) ===
+        currentPlayer.position
 
   async function run(task: () => Promise<{ ok: boolean; error?: string }>) {
     setBusy(true)
@@ -428,6 +613,16 @@ export function HostGame({
     return () => window.removeEventListener('keydown', onKey)
   }, [qrZoom])
 
+  // 盤面優先モードも Escape キーで通常表示へ戻せるようにする
+  useEffect(() => {
+    if (!boardFocus || qrZoom) return
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setBoardFocus(false)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [boardFocus, qrZoom])
+
   // 駒が実位置へ歩き終えてからカードを表示する（到着前のネタバレ防止）
   const tokenArrived =
     !currentPlayer ||
@@ -460,9 +655,9 @@ export function HostGame({
       ) : (
         <div className="turnCenter">
           <p>{phaseLabel(bundle.game.phase)}</p>
-          {!pendingSpace && lastCard && tokenArrived ? (
+          {visibleCard && visibleCardTokenArrived ? (
             <div className="rcardSlot rcardSlot--center">
-              <RichCard card={lastCard} />
+              <RichCard card={visibleCard} />
               {bundle.game.phase === 'await_card_move' ? (
                 <p className="advanceHint">
                   {currentPlayer?.display_name ?? 'プレイヤー'} が「進む」を押すと駒が移動します
@@ -477,7 +672,7 @@ export function HostGame({
           <strong style={{ color: currentPlayer?.color }}>
             {currentPlayer?.display_name ?? 'GAME OVER'}
           </strong>
-          {pendingSpace && tokenArrived ? (
+          {!visibleCard && pendingSpace && tokenArrived ? (
             <div className="rcardSlot rcardSlot--center">
               <RichCard space={pendingSpace} />
             </div>
@@ -518,8 +713,22 @@ export function HostGame({
   )
 
   return (
-    <main className="hostShell">
+    <main
+      className="hostShell"
+      data-board-focus={boardFocus ? 'true' : 'false'}
+    >
       <BackToAppHarbor label="アプリ一覧へ" />
+
+      {boardFocus ? (
+        <button
+          type="button"
+          className="panelRestoreButton"
+          onClick={() => setBoardFocus(false)}
+          aria-label="操作パネルを表示"
+        >
+          操作パネルを表示
+        </button>
+      ) : null}
 
       {qrZoom && joinUrl ? (
         <div
@@ -570,9 +779,18 @@ export function HostGame({
             <p>TABLETOP CONTROL</p>
             <h1>{bundle.game.title}</h1>
           </div>
-          <button type="button" disabled={busy} onClick={createNewGame}>
-            新規卓
-          </button>
+          <div className="hostHeaderActions">
+            <button
+              type="button"
+              className="boardFocusButton"
+              onClick={() => setBoardFocus(true)}
+            >
+              盤面を拡大
+            </button>
+            <button type="button" disabled={busy} onClick={createNewGame}>
+              新規卓
+            </button>
+          </div>
         </header>
 
         {error ? <div className="errorBox">{error}</div> : null}
@@ -898,6 +1116,7 @@ export function HostGame({
               </button>
               <button
                 type="button"
+                disabled={busy || bundle.game.phase === 'presenting'}
                 onClick={() =>
                   run(() =>
                     hostCorrectionAction(slug, bundle.game.id, {
@@ -1063,10 +1282,11 @@ export function HostGame({
       <style>{`
         .hostShell {
           min-height: 100vh;
+          min-height: 100dvh;
           display: grid;
           grid-template-columns: minmax(0, 1fr) minmax(320px, 410px);
-          gap: clamp(14px, 2vw, 28px);
-          padding: clamp(12px, 2vw, 28px);
+          gap: clamp(10px, 1.4vw, 20px);
+          padding: clamp(8px, 1.25vw, 18px);
           box-sizing: border-box;
           background:
             radial-gradient(circle at 12% 4%, rgba(213,40,47,.2), transparent 30rem),
@@ -1076,7 +1296,34 @@ export function HostGame({
           font-family: Inter, "Noto Sans JP", system-ui, sans-serif;
         }
         .boardColumn { min-width: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; }
-        .boardStage { position: relative; width: min(100%, 88vh); min-width: 0; }
+        .boardStage {
+          position: relative;
+          width: min(100%, 94vh);
+          width: min(100%, 94dvh);
+          min-width: 0;
+        }
+        .hostShell[data-board-focus="true"] {
+          grid-template-columns: minmax(0, 1fr);
+        }
+        .hostShell[data-board-focus="true"] .boardStage {
+          width: min(100%, calc(100vh - 16px));
+          width: min(100%, calc(100dvh - 16px));
+        }
+        .hostShell[data-board-focus="true"] .hostPanel {
+          display: none;
+        }
+        .panelRestoreButton {
+          position: fixed;
+          top: 12px;
+          left: 12px;
+          z-index: 20;
+          min-height: 38px;
+          border: 1px solid rgba(255,244,228,.35);
+          background: rgba(26,15,20,.9);
+          color: #fff8ed;
+          box-shadow: 0 8px 22px rgba(0,0,0,.35);
+          backdrop-filter: blur(5px);
+        }
         .eventBanner {
           display: flex;
           align-items: center;
@@ -1202,6 +1449,8 @@ export function HostGame({
           padding-right: 3px;
         }
         .hostHeader { display: flex; justify-content: space-between; align-items: end; gap: 12px; }
+        .hostHeaderActions { display: flex; justify-content: flex-end; gap: 7px; flex-wrap: wrap; }
+        .boardFocusButton { background: #efbf64; }
         .hostHeader p, .sectionLabel { margin: 0; color: #efbf64; font-size: 10px; font-weight: 900; letter-spacing: .18em; }
         .hostHeader h1 { margin: 4px 0 0; font-family: Georgia, serif; font-size: 28px; line-height: 1; }
         button, input, select {
@@ -1301,7 +1550,10 @@ export function HostGame({
         .adminLink { color: #efbf64; text-align: center; font-size: 12px; }
         @media (max-width: 1050px) {
           .hostShell { grid-template-columns: 1fr; }
-          .boardStage { width: min(100%, 82vh); }
+          .boardStage {
+            width: min(100%, calc(100vh - 16px));
+            width: min(100%, calc(100dvh - 16px));
+          }
 
           .hostPanel { max-height: none; overflow: visible; }
         }

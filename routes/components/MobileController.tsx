@@ -385,17 +385,18 @@ export function MobileController({
                 </div>
               </div>
 
+              {state.game.phase === 'presenting' ? (
+                <div className="turnWaitNotice">
+                  盤面の演出中です。次の操作が表示されるまでお待ちください。
+                </div>
+              ) : null}
+
               {!isMyTurn &&
               currentPlayer?.controller_type === 'cpu' &&
               state.game.phase === 'await_roll' ? (
-                <button
-                  type="button"
-                  className="rollButton cpuButton"
-                  disabled={busy}
-                  onClick={() => void act('advance_cpu')}
-                >
-                  🤖 CPUのターンを始める
-                </button>
+                <div className="turnWaitNotice">
+                  CPUのターンです。盤面の演出完了後に自動で進みます。
+                </div>
               ) : null}
 
               {isMyTurn && state.game.phase === 'await_card_move' ? (
@@ -881,7 +882,10 @@ export function MobileController({
         .mobileDice { display: flex; gap: 7px; }
         .mobileDice b { width: 42px; aspect-ratio: 1; display: grid; place-items: center; border-radius: 8px; background: #f7f0dd; color: #181413; box-shadow: 0 4px 0 #a99b9f; font-family: Georgia, serif; font-size: 24px; }
         .rollButton { min-height: 74px; font-size: 20px; box-shadow: 0 5px 0 #7d191d; }
-        .cpuButton { background: #374151; box-shadow: 0 5px 0 #1f2937; font-size: 18px; }
+        .turnWaitNotice {
+          padding: 14px; border-radius: 9px; background: #374151;
+          color: #fff; font-size: 14px; font-weight: 800; text-align: center;
+        }
         .jailActions, .twoButtons, .decisionPanel > div, .auctionPanel > div { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
         .secondaryButton { background: #e8dfcd; color: #181413; }
         .decisionPanel, .auctionPanel, .debtPanel { display: grid; gap: 9px; padding: 12px; border: 1px solid rgba(255,255,255,.13); border-radius: 9px; }

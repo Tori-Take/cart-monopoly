@@ -115,14 +115,43 @@ function finishIfNeeded(state: MutableGameState) {
   return true
 }
 
-function startTurn(state: MutableGameState, player: Player) {
+function announceTurn(
+  state: MutableGameState,
+  player: Player,
+  message: string,
+) {
   state.game.current_player_id = player.id
-  state.game.phase = 'await_roll'
-  state.game.pending_action = {}
+  state.game.phase = 'presenting'
+  state.game.pending_action = {
+    kind: 'turn_transition',
+    stage: 'announcement',
+    nextPlayerId: player.id,
+    incrementTurn: false,
+    message,
+    finishGame: false,
+  }
   state.game.dice_1 = null
   state.game.dice_2 = null
   state.game.doubles_count = 0
-  emit(state, 'turn', `${player.display_name} のターンです`, player.id)
+  emit(state, 'turn', message, player.id)
+}
+
+function queueTurnTransition(
+  state: MutableGameState,
+  nextPlayer: Player,
+  incrementTurn: boolean,
+  message: string,
+  finishGame = false,
+) {
+  state.game.phase = 'presenting'
+  state.game.pending_action = {
+    kind: 'turn_transition',
+    stage: 'handoff',
+    nextPlayerId: nextPlayer.id,
+    incrementTurn,
+    message,
+    finishGame,
+  }
 }
 
 function endTurn(
@@ -130,18 +159,35 @@ function endTurn(
   player: Player,
   rolledDoubles: boolean,
 ) {
-  if (finishIfNeeded(state)) return
+  const remaining = activePlayers(state)
+  if (remaining.length === 1) {
+    queueTurnTransition(
+      state,
+      remaining[0],
+      false,
+      `${remaining[0].display_name} がゲームに勝利しました`,
+      true,
+    )
+    return
+  }
   if (rolledDoubles && !player.in_jail && !player.bankrupt) {
-    state.game.phase = 'await_roll'
-    state.game.pending_action = {}
-    emit(state, 'turn', `${player.display_name} はゾロ目でもう一度振れます`, player.id)
+    queueTurnTransition(
+      state,
+      player,
+      false,
+      `${player.display_name} はゾロ目でもう一度振れます`,
+    )
     return
   }
 
   const next = nextPlayer(state, player.id)
   if (!next) return
-  state.game.turn_number += 1
-  startTurn(state, next)
+  queueTurnTransition(
+    state,
+    next,
+    true,
+    `${next.display_name} のターンです`,
+  )
 }
 
 function sendToJail(state: MutableGameState, player: Player, reason: string) {
@@ -691,8 +737,32 @@ export function startGameEngine(state: MutableGameState) {
   state.game.current_player_id = players[0].id
   state.game.pending_action = {}
   emit(state, 'system', 'ゲームを開始しました')
-  startTurn(state, players[0])
-  runCpuTurns(state)
+  announceTurn(state, players[0], `${players[0].display_name} のターンです`)
+}
+
+export function completeTurnPresentationEngine(state: MutableGameState) {
+  if (
+    state.game.status !== 'playing' ||
+    state.game.phase !== 'presenting' ||
+    state.game.pending_action.kind !== 'turn_transition'
+  ) {
+    throw new Error('presentation_not_pending')
+  }
+  const transition = state.game.pending_action
+  if (transition.finishGame) {
+    if (!finishIfNeeded(state)) throw new Error('finish_not_available')
+    return
+  }
+  const nextPlayer =
+    state.players.find((player) => player.id === transition.nextPlayerId) ?? null
+  if (!nextPlayer || nextPlayer.bankrupt) throw new Error('player_not_found')
+  if (transition.stage === 'handoff') {
+    if (transition.incrementTurn) state.game.turn_number += 1
+    announceTurn(state, nextPlayer, transition.message)
+    return
+  }
+  state.game.phase = 'await_roll'
+  state.game.pending_action = {}
 }
 
 export function rollTurnEngine(state: MutableGameState, playerId: string) {
@@ -1039,7 +1109,11 @@ export function respondTradeEngine(
 
 export function forceEndTurnEngine(state: MutableGameState) {
   const player = currentPlayer(state)
-  if (!player || state.game.status !== 'playing') return
+  if (
+    !player ||
+    state.game.status !== 'playing' ||
+    state.game.phase === 'presenting'
+  ) return
   state.game.pending_action = {}
   endTurn(state, player, false)
   runCpuTurns(state)

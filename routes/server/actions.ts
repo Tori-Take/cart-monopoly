@@ -28,6 +28,7 @@ import {
 import {
   advanceCardEngine,
   auctionEngine,
+  completeTurnPresentationEngine,
   declareBankruptcyEngine,
   forceEndTurnEngine,
   managePropertyEngine,
@@ -865,14 +866,53 @@ export async function hostCorrectionAction(
     : { ok: false as const, error: 'game_not_found' }
 }
 
-export async function advanceCpuAction(slug: string, gameId: string) {
+export async function advanceCpuAction(
+  slug: string,
+  gameId: string,
+  expectedPlayerId: string,
+) {
   const ctx = await requireHost(slug)
   const updated = await mutateGame(ctx.actor.organizationId, gameId, (state) => {
+    if (
+      state.game.status !== 'playing' ||
+      state.game.phase !== 'await_roll' ||
+      state.game.current_player_id !== expectedPlayerId
+    ) {
+      throw new Error('cpu_turn_changed')
+    }
+    const player = state.players.find((item) => item.id === expectedPlayerId)
+    if (!player || player.controller_type !== 'cpu') {
+      throw new Error('not_cpu_turn')
+    }
     runCpuTurns(state)
   })
   return updated
     ? { ok: true as const, bundle: updated }
     : { ok: false as const, error: 'game_not_found' }
+}
+
+export async function completeTurnPresentationAction(
+  slug: string,
+  gameId: string,
+  expectedVersion: number,
+) {
+  const ctx = await requireHost(slug)
+  try {
+    const updated = await mutateGame(ctx.actor.organizationId, gameId, (state) => {
+      if (state.game.version !== expectedVersion) {
+        throw new Error('presentation_changed')
+      }
+      completeTurnPresentationEngine(state)
+    })
+    return updated
+      ? { ok: true as const, bundle: updated }
+      : { ok: false as const, error: 'game_not_found' }
+  } catch (error) {
+    return {
+      ok: false as const,
+      error: error instanceof Error ? error.message : 'action_failed',
+    }
+  }
 }
 
 export async function getJoinPreviewAction(
@@ -1099,10 +1139,7 @@ export async function controllerActionAction(
         } else if (action === 'trade_accept') respondTradeEngine(state, playerId, true)
         else if (action === 'trade_reject') respondTradeEngine(state, playerId, false)
         else if (action === 'advance_cpu') {
-          const cp = state.players.find((p) => p.id === state.game.current_player_id)
-          if (!cp || cp.controller_type !== 'cpu') throw new Error('not_cpu_turn')
-          if (state.game.phase !== 'await_roll') throw new Error('wrong_phase')
-          runCpuTurns(state)
+          throw new Error('cpu_managed_by_host')
         }
         else throw new Error('unknown_action')
       },
