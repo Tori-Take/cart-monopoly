@@ -321,6 +321,7 @@ export function HostGame({
     pending.kind === 'purchase' || pending.kind === 'auction'
       ? getSpace(pending.spaceIndex)
       : null
+  const auction = pending.kind === 'auction' ? pending : null
 
   // 現ターン中に引いたカードを表示する（turn イベント以降の最新 card イベント）
   const lastCard = useMemo(() => {
@@ -468,6 +469,19 @@ export function HostGame({
             {currentPlayer?.display_name ?? 'GAME OVER'}
           </strong>
           {pendingSpace ? <span>{pendingSpace.name}</span> : null}
+          {auction ? (
+            <div className="auctionStatus">
+              <span className="auctionStatus__label">現在の最高額</span>
+              <strong className="auctionStatus__bid">
+                {money(auction.highestBid)}
+              </strong>
+              <span className="auctionStatus__bidder">
+                {bundle.players.find(
+                  (player) => player.id === auction.highestBidderId,
+                )?.display_name ?? '入札なし'}
+              </span>
+            </div>
+          ) : null}
           {banner ? (
             <div
               key={banner.id}
@@ -1128,6 +1142,14 @@ export function HostGame({
         .turnCenter p { width: 100%; margin: 0; color: #7f1d1d; font-size: 11px; font-weight: 900; letter-spacing: .14em; }
         .turnCenter > strong { width: 100%; font-size: clamp(17px, 2vw, 28px); }
         .turnCenter > span { width: 100%; font-size: 11px; }
+        .auctionStatus {
+          width: 100%; display: grid; gap: 2px; padding: 6px 8px;
+          border-radius: 6px; border: 2px solid #7f1d1d;
+          background: rgba(127,29,29,.08); text-align: center;
+        }
+        .auctionStatus__label { font-size: 9px; font-weight: 900; letter-spacing: .14em; color: #7f1d1d; }
+        .auctionStatus__bid { font-size: clamp(18px, 2.2vw, 30px); color: #7f1d1d; font-family: Georgia, serif; }
+        .auctionStatus__bidder { font-size: 11px; color: #181413; }
         .drawnCard {
           width: 100%; display: grid; gap: 3px; padding: 8px 10px;
           border-radius: 6px; border: 2px solid #171717;
