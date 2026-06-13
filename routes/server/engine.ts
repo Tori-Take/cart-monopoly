@@ -382,6 +382,19 @@ function drawCard(
           other.money -= effect.amount
         }
       }
+      const per = Math.abs(effect.amount)
+      const total = per * others.length
+      if (others.length > 0) {
+        emit(
+          state,
+          'rent',
+          effect.amount > 0
+            ? `${player.display_name} が${card.title}で各プレイヤーから$${per}ずつ（合計$${total}）受け取りました`
+            : `${player.display_name} が${card.title}で各プレイヤーへ$${per}ずつ（合計$${total}）支払いました`,
+          player.id,
+          { amount: effect.amount > 0 ? total : -total },
+        )
+      }
       if (player.money < 0 && player.controller_type !== 'cpu') {
         state.game.phase = 'manage_debt'
         state.game.pending_action = {
@@ -396,6 +409,15 @@ function drawCard(
       }
     } else if (effect.amount >= 0) {
       player.money += effect.amount
+      if (effect.amount > 0) {
+        emit(
+          state,
+          'rent',
+          `${player.display_name} が${card.title}で銀行から$${effect.amount}を受け取りました`,
+          player.id,
+          { amount: effect.amount },
+        )
+      }
     } else {
       charge(
         state,
