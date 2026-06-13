@@ -184,6 +184,7 @@ export function MobileController({
   const effectiveTradeTarget = tradeTarget || opponents[0]?.id || ''
   const pending = state?.game.pending_action
   const auction = pending?.kind === 'auction' ? pending : null
+  const cardMove = pending?.kind === 'card_move' ? pending : null
   const minBid = auction ? auction.highestBid + 10 : 0
   const maxBid = me?.money ?? 0
   const bidValue = Math.min(Math.max(bid, minBid), Math.max(minBid, maxBid))
@@ -403,7 +404,7 @@ export function MobileController({
                   disabled={busy}
                   onClick={() => void act('advance_card')}
                 >
-                  進む
+                  {cardMove?.resolution === 'end_turn' ? 'OK' : '進む'}
                 </button>
               ) : null}
 

@@ -50,6 +50,8 @@ export interface CardMovePending {
   playerId: string
   cardDeck: 'chance' | 'chest'
   cardId: string
+  // move: 駒を destination へ移動して着地処理 / jail: 留置所へ移動 / end_turn: 効果適用済みでターン終了のみ
+  resolution: 'move' | 'jail' | 'end_turn'
   destination: number
   collectGo: boolean
   rentMultiplier: number

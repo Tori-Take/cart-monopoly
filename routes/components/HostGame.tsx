@@ -324,6 +324,8 @@ export function HostGame({
       ? getSpace(pending.spaceIndex)
       : null
   const auction = pending.kind === 'auction' ? pending : null
+  const cardMove = pending.kind === 'card_move' ? pending : null
+  const advanceLabel = cardMove?.resolution === 'end_turn' ? 'OK' : '進む'
 
   // 現ターン中に引いたカードを表示する（turn イベント以降の最新 card イベント）
   const lastCard = useMemo(() => {
@@ -465,7 +467,8 @@ export function HostGame({
               <RichCard card={lastCard} />
               {bundle.game.phase === 'await_card_move' ? (
                 <p className="advanceHint">
-                  {currentPlayer?.display_name ?? 'プレイヤー'} が「進む」を押すと駒が移動します
+                  {currentPlayer?.display_name ?? 'プレイヤー'} が「{advanceLabel}」を押すと
+                  {cardMove?.resolution === 'end_turn' ? '次に進みます' : '駒が移動します'}
                 </p>
               ) : null}
             </div>
@@ -994,7 +997,7 @@ export function HostGame({
                     )
                   }
                 >
-                  進む
+                  {advanceLabel}
                 </button>
               ) : null}
               {bundle.game.phase === 'await_purchase' ? (

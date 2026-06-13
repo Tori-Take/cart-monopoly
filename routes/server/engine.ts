@@ -345,6 +345,33 @@ function nearestSpace(position: number, target: 'railroad' | 'utility') {
   return position
 }
 
+// 人間プレイヤーが引いたカードを画面で確認できるよう一旦停止する。
+// 「進む / OK」ボタン押下で advanceCardEngine が resolution に応じて続行する。
+function pauseForCard(
+  state: MutableGameState,
+  player: Player,
+  deck: 'chance' | 'chest',
+  cardId: string,
+  rolledDoubles: boolean,
+  resolution: 'move' | 'jail' | 'end_turn',
+  destination = player.position,
+  collectGo = false,
+  rentMultiplier = 1,
+) {
+  state.game.phase = 'await_card_move'
+  state.game.pending_action = {
+    kind: 'card_move',
+    playerId: player.id,
+    cardDeck: deck,
+    cardId,
+    resolution,
+    destination,
+    collectGo,
+    rentMultiplier,
+    rolledDoubles,
+  }
+}
+
 function drawCard(
   state: MutableGameState,
   player: Player,
@@ -429,7 +456,8 @@ function drawCard(
       )
       if (state.game.phase === 'manage_debt' || player.bankrupt) return
     }
-    endTurn(state, player, rolledDoubles)
+    if (player.controller_type === 'cpu') endTurn(state, player, rolledDoubles)
+    else pauseForCard(state, player, deck, cardId, rolledDoubles, 'end_turn')
     return
   }
 
@@ -455,31 +483,37 @@ function drawCard(
       movePlayer(state, player, destination, collectGo)
       applyLanding(state, player, rolledDoubles, rentMultiplier)
     } else {
-      state.game.phase = 'await_card_move'
-      state.game.pending_action = {
-        kind: 'card_move',
-        playerId: player.id,
-        cardDeck: deck,
+      pauseForCard(
+        state,
+        player,
+        deck,
         cardId,
+        rolledDoubles,
+        'move',
         destination,
         collectGo,
         rentMultiplier,
-        rolledDoubles,
-      }
+      )
     }
     return
   }
 
   if (effect.type === 'jail') {
-    sendToJail(state, player, card.title)
-    endTurn(state, player, false)
+    // CPU は即時収監。人間はカード確認後に「進む」で留置所へ移動
+    if (player.controller_type === 'cpu') {
+      sendToJail(state, player, card.title)
+      endTurn(state, player, false)
+    } else {
+      pauseForCard(state, player, deck, cardId, rolledDoubles, 'jail')
+    }
     return
   }
 
   if (effect.type === 'get_out') {
     if (deck === 'chance') player.get_out_chance += 1
     else player.get_out_chest += 1
-    endTurn(state, player, rolledDoubles)
+    if (player.controller_type === 'cpu') endTurn(state, player, rolledDoubles)
+    else pauseForCard(state, player, deck, cardId, rolledDoubles, 'end_turn')
     return
   }
 
@@ -488,9 +522,9 @@ function drawCard(
     0,
   )
   charge(state, player, buildings, null, card.title, rolledDoubles)
-  if (state.game.phase !== 'manage_debt' && !player.bankrupt) {
-    endTurn(state, player, rolledDoubles)
-  }
+  if (state.game.phase === 'manage_debt' || player.bankrupt) return
+  if (player.controller_type === 'cpu') endTurn(state, player, rolledDoubles)
+  else pauseForCard(state, player, deck, cardId, rolledDoubles, 'end_turn')
 }
 
 function startAuction(
@@ -795,10 +829,19 @@ export function advanceCardEngine(state: MutableGameState, playerId: string) {
   const player = state.players.find((item) => item.id === playerId)
   if (!player) throw new Error('player_not_found')
 
-  const { destination, collectGo, rentMultiplier, rolledDoubles } = pending
+  const { resolution, destination, collectGo, rentMultiplier, rolledDoubles } = pending
   state.game.pending_action = {}
-  movePlayer(state, player, destination, collectGo)
-  applyLanding(state, player, rolledDoubles, rentMultiplier)
+  if (resolution === 'move') {
+    movePlayer(state, player, destination, collectGo)
+    applyLanding(state, player, rolledDoubles, rentMultiplier)
+  } else if (resolution === 'jail') {
+    const card = getCard(pending.cardDeck, pending.cardId)
+    sendToJail(state, player, card?.title ?? 'Go To Jail')
+    endTurn(state, player, false)
+  } else {
+    // end_turn: 効果は drawCard で適用済み。確認後にターン終了するだけ
+    endTurn(state, player, rolledDoubles)
+  }
 }
 
 export function auctionEngine(
