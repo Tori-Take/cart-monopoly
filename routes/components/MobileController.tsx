@@ -7,8 +7,9 @@ import {
   useState,
   type CSSProperties,
 } from 'react'
-import type { PublicGameState } from '../_types'
+import type { BoardSpace, PublicGameState } from '../_types'
 import { getSpace } from '../gameData'
+import { RichCard, RICH_CARD_CSS } from './RichCard'
 import {
   connectControllerAction,
   controllerActionAction,
@@ -91,6 +92,7 @@ export function MobileController({
   const [requestedCash, setRequestedCash] = useState(0)
   const [offeredProperty, setOfferedProperty] = useState('')
   const [requestedProperty, setRequestedProperty] = useState('')
+  const [richView, setRichView] = useState<BoardSpace | null>(null)
   const pollingRef = useRef(false)
   // ポーリング由来のエラーだけを次回成功時にクリアする (操作エラーを即座に消さない)
   const pollErrorRef = useRef(false)
@@ -196,6 +198,13 @@ export function MobileController({
   useEffect(() => {
     if (!auctionActive) setBid(0)
   }, [auctionActive])
+
+  useEffect(() => {
+    if (!richView) return
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setRichView(null) }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [richView])
 
   async function connect() {
     setBusy(true)
@@ -425,7 +434,10 @@ export function MobileController({
               state.game.phase === 'await_purchase' &&
               pending?.kind === 'purchase' ? (
                 <div className="decisionPanel">
-                  <span>{getSpace(pending.spaceIndex).name}</span>
+                  <span
+                    style={{ cursor: 'pointer', textDecoration: 'underline dotted' }}
+                    onClick={() => setRichView(getSpace(pending.spaceIndex))}
+                  >{getSpace(pending.spaceIndex).name}</span>
                   <strong>{money(getSpace(pending.spaceIndex).price ?? 0)}</strong>
                   <div>
                     <button
@@ -584,6 +596,7 @@ export function MobileController({
                     key={property.id}
                     className="deedCard"
                     style={{ '--deed-color': space.color ?? '#252525' } as CSSProperties}
+                    onClick={() => setRichView(space)}
                   >
                     <div />
                     <strong>{space.name}</strong>
@@ -891,6 +904,10 @@ export function MobileController({
         .eventCard { display: grid; gap: 5px; }
         .eventCard p { margin: 0; padding-bottom: 5px; border-bottom: 1px solid rgba(24,20,19,.1); font-size: 11px; }
         .muted { color: #756560; font-size: 12px; }
+        .rcardModal { position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; padding: 24px; background: rgba(10,6,8,.72); }
+        .rcardModal__inner { width: min(86vw, 300px); display: grid; gap: 12px; }
+        .rcardModal__close { min-height: 44px; border: 0; border-radius: 8px; background: #d5282f; color: #fff; font-weight: 800; font: inherit; cursor: pointer; }
+        .deedCard { cursor: pointer; }
         .mobileError {
           position: sticky;
           z-index: 20;
@@ -903,7 +920,27 @@ export function MobileController({
           font-weight: 800;
           box-shadow: 0 8px 24px rgba(0,0,0,.3);
         }
+        ${RICH_CARD_CSS}
       `}</style>
+      {richView ? (
+        <div
+          className="rcardModal"
+          role="dialog"
+          aria-modal="true"
+          onClick={() => setRichView(null)}
+        >
+          <div className="rcardModal__inner" onClick={(e) => e.stopPropagation()}>
+            <RichCard space={richView} />
+            <button
+              type="button"
+              className="rcardModal__close"
+              onClick={() => setRichView(null)}
+            >
+              閉じる
+            </button>
+          </div>
+        </div>
+      ) : null}
     </main>
   )
 }

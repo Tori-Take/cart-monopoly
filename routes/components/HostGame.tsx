@@ -19,6 +19,7 @@ import type {
   TokenSize,
 } from '../_types'
 import { TOKENS, getCard, getSpace } from '../gameData'
+import { RichCard, RICH_CARD_CSS } from './RichCard'
 import {
   addPlayerSlotAction,
   assignControllerAction,
@@ -453,12 +454,8 @@ export function HostGame({
         <div className="turnCenter">
           <p>{phaseLabel(bundle.game.phase)}</p>
           {lastCard ? (
-            <div className={`drawnCard drawnCard--${lastCard.deck}`}>
-              <span className="drawnCard__label">
-                {lastCard.deck === 'chance' ? '? CHANCE' : '◇ COMMUNITY CHEST'}
-              </span>
-              <strong className="drawnCard__title">{lastCard.title}</strong>
-              <span className="drawnCard__detail">{lastCard.detail}</span>
+            <div className="rcardSlot rcardSlot--center">
+              <RichCard card={lastCard} />
             </div>
           ) : null}
           <div className="diceDisplay">
@@ -468,7 +465,11 @@ export function HostGame({
           <strong style={{ color: currentPlayer?.color }}>
             {currentPlayer?.display_name ?? 'GAME OVER'}
           </strong>
-          {pendingSpace ? <span>{pendingSpace.name}</span> : null}
+          {pendingSpace ? (
+            <div className="rcardSlot rcardSlot--center">
+              <RichCard space={pendingSpace} />
+            </div>
+          ) : null}
           {auction ? (
             <div className="auctionStatus">
               <span className="auctionStatus__label">現在の最高額</span>
@@ -1150,20 +1151,8 @@ export function HostGame({
         .auctionStatus__label { font-size: 9px; font-weight: 900; letter-spacing: .14em; color: #7f1d1d; }
         .auctionStatus__bid { font-size: clamp(18px, 2.2vw, 30px); color: #7f1d1d; font-family: Georgia, serif; }
         .auctionStatus__bidder { font-size: 11px; color: #181413; }
-        .drawnCard {
-          width: 100%; display: grid; gap: 3px; padding: 8px 10px;
-          border-radius: 6px; border: 2px solid #171717;
-          background: rgba(247,240,221,.97); text-align: center;
-          animation: bannerIn 240ms cubic-bezier(.2,.9,.3,1.2);
-        }
-        .drawnCard--chance { border-top: 5px solid #e07800; }
-        .drawnCard--chest  { border-top: 5px solid #3a9bd5; }
-        .drawnCard__label {
-          font-size: 9px; font-weight: 900; letter-spacing: .12em;
-          color: #7f1d1d; text-transform: uppercase;
-        }
-        .drawnCard__title  { font-size: clamp(11px,1.3vw,16px); font-weight: 900; color: #181413; }
-        .drawnCard__detail { font-size: clamp(9px,1vw,13px); color: #4b3228; }
+        .rcardSlot { width: 100%; display: flex; justify-content: center; }
+        .rcardSlot--center { max-width: 220px; margin: 4px auto; }
         .diceDisplay { display: flex; gap: 7px; }
         .diceDisplay b {
           width: 42px; aspect-ratio: 1; display: grid; place-items: center;
@@ -1283,6 +1272,7 @@ export function HostGame({
 
           .hostPanel { max-height: none; overflow: visible; }
         }
+        ${RICH_CARD_CSS}
       `}</style>
     </main>
   )
