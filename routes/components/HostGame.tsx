@@ -71,6 +71,10 @@ function phaseLabel(phase: string) {
   )
 }
 
+// サイコロ等のコメントが出てから駒が歩き出すまでの待ち時間 (ms)。
+// この間にプレイヤーがコメントを読めるようにする。
+const MOVE_READ_DELAY = 2200
+
 const EVENT_ICONS: Record<GameEvent['event_type'], string> = {
   system: 'ℹ️',
   join: '📱',
@@ -117,12 +121,15 @@ export function HostGame({
   const lastEventIdRef = useRef<string | null>(null)
   const eventsInitializedRef = useRef(false)
   const bannerTimerRef = useRef<number | null>(null)
+  // 新着イベント（サイコロ等のコメント）が出てから駒が動き出すまでの「読む間」。
+  // この時刻まで駒の歩行を止め、先にコメントを読ませる。
+  const moveGateRef = useRef(0)
 
   const showNextBanner = useCallback(() => {
     const next = eventQueueRef.current.shift() ?? null
     setBanner(next)
     if (next) {
-      const delay = eventQueueRef.current.length >= 3 ? 1200 : 2200
+      const delay = eventQueueRef.current.length >= 3 ? 2000 : 3400
       bannerTimerRef.current = window.setTimeout(showNextBanner, delay)
     } else {
       bannerTimerRef.current = null
@@ -195,9 +202,11 @@ export function HostGame({
     [],
   )
 
-  // 表示位置を実位置へ1マスずつ追従させる (190ms/歩)
+  // 表示位置を実位置へ1マスずつ追従させる (280ms/歩)
   useEffect(() => {
     const timer = window.setInterval(() => {
+      // コメントの「読む間」が明けるまでは駒を動かさない（初回配置は除く）
+      const holding = Date.now() < moveGateRef.current
       setDisplayPositions((current) => {
         let changed = false
         const next: Record<string, number> = { ...current }
@@ -211,6 +220,7 @@ export function HostGame({
             continue
           }
           if (shown === target) continue
+          if (holding) continue
           const forward = (target - shown + 40) % 40
           const backward = (shown - target + 40) % 40
           // 「3マス戻る」カードだけ後退。遠距離ワープは2マスずつで間延び防止
@@ -221,7 +231,7 @@ export function HostGame({
         }
         return changed ? next : current
       })
-    }, 190)
+    }, 280)
     return () => window.clearInterval(timer)
   }, [bundle.players])
 
@@ -240,6 +250,8 @@ export function HostGame({
     const fresh = lastIndex >= 0 ? events.slice(lastIndex + 1) : events.slice(-5)
     if (fresh.length === 0) return
     lastEventIdRef.current = events[events.length - 1]?.id ?? lastId
+    // コメントを読む時間を確保するため、新着イベント直後は駒の歩行を一拍止める
+    moveGateRef.current = Date.now() + MOVE_READ_DELAY
     eventQueueRef.current.push(...fresh)
     if (eventQueueRef.current.length > 8) {
       eventQueueRef.current = eventQueueRef.current.slice(-6)
