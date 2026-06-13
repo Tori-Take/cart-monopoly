@@ -398,6 +398,17 @@ export function MobileController({
                 </button>
               ) : null}
 
+              {isMyTurn && state.game.phase === 'await_card_move' ? (
+                <button
+                  type="button"
+                  className="rollButton"
+                  disabled={busy}
+                  onClick={() => void act('advance_card')}
+                >
+                  進む
+                </button>
+              ) : null}
+
               {isMyTurn && state.game.phase === 'await_roll' && !pending?.kind ? (
                 <>
                   {me.in_jail ? (

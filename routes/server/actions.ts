@@ -26,6 +26,7 @@ import {
   shuffle,
 } from '../gameData'
 import {
+  advanceCardEngine,
   auctionEngine,
   declareBankruptcyEngine,
   forceEndTurnEngine,
@@ -1060,6 +1061,10 @@ export async function controllerActionAction(
       (state) => {
         if (state.game.status === 'paused') throw new Error('game_paused')
         if (action === 'roll') rollTurnEngine(state, playerId)
+        else if (action === 'advance_card') {
+          advanceCardEngine(state, playerId)
+          runCpuTurns(state)
+        }
         else if (action === 'buy') purchaseEngine(state, playerId, true)
         else if (action === 'auction_start') purchaseEngine(state, playerId, false)
         else if (action === 'auction_bid') auctionEngine(state, playerId, 'bid', Number(payload.amount))
@@ -1115,7 +1120,7 @@ export async function hostPlayerActionAction(
   slug: string,
   gameId: string,
   playerId: string,
-  action: 'roll' | 'buy' | 'auction_start',
+  action: 'roll' | 'advance_card' | 'buy' | 'auction_start',
 ) {
   const ctx = await requireHost(slug)
   try {
@@ -1123,6 +1128,10 @@ export async function hostPlayerActionAction(
       const player = state.players.find((item) => item.id === playerId)
       if (!player || player.controller_type !== 'pc') throw new Error('pc_player_only')
       if (action === 'roll') rollTurnEngine(state, playerId)
+      else if (action === 'advance_card') {
+        advanceCardEngine(state, playerId)
+        runCpuTurns(state)
+      }
       else purchaseEngine(state, playerId, action === 'buy')
     })
     return bundle

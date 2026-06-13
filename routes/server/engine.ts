@@ -382,6 +382,19 @@ function drawCard(
           other.money -= effect.amount
         }
       }
+      const per = Math.abs(effect.amount)
+      const total = per * others.length
+      if (others.length > 0) {
+        emit(
+          state,
+          'rent',
+          effect.amount > 0
+            ? `${player.display_name} が${card.title}で各プレイヤーから$${per}ずつ（合計$${total}）受け取りました`
+            : `${player.display_name} が${card.title}で各プレイヤーへ$${per}ずつ（合計$${total}）支払いました`,
+          player.id,
+          { amount: effect.amount > 0 ? total : -total },
+        )
+      }
       if (player.money < 0 && player.controller_type !== 'cpu') {
         state.game.phase = 'manage_debt'
         state.game.pending_action = {
@@ -396,6 +409,15 @@ function drawCard(
       }
     } else if (effect.amount >= 0) {
       player.money += effect.amount
+      if (effect.amount > 0) {
+        emit(
+          state,
+          'rent',
+          `${player.display_name} が${card.title}で銀行から$${effect.amount}を受け取りました`,
+          player.id,
+          { amount: effect.amount },
+        )
+      }
     } else {
       charge(
         state,
@@ -411,23 +433,40 @@ function drawCard(
     return
   }
 
-  if (effect.type === 'move') {
-    movePlayer(state, player, effect.position, effect.collectGo)
-    applyLanding(state, player, rolledDoubles)
-    return
-  }
+  if (effect.type === 'move' || effect.type === 'nearest' || effect.type === 'back') {
+    let destination: number
+    let collectGo: boolean
+    let rentMultiplier = 1
+    if (effect.type === 'move') {
+      destination = effect.position
+      collectGo = effect.collectGo
+    } else if (effect.type === 'nearest') {
+      destination = nearestSpace(player.position, effect.target)
+      collectGo = true
+      rentMultiplier = effect.rentMultiplier
+    } else {
+      destination = (player.position - effect.spaces + 40) % 40
+      collectGo = false
+    }
 
-  if (effect.type === 'nearest') {
-    const destination = nearestSpace(player.position, effect.target)
-    movePlayer(state, player, destination, true)
-    applyLanding(state, player, rolledDoubles, effect.rentMultiplier)
-    return
-  }
-
-  if (effect.type === 'back') {
-    const destination = (player.position - effect.spaces + 40) % 40
-    movePlayer(state, player, destination, false)
-    applyLanding(state, player, rolledDoubles)
+    // CPU は即時に移動して着地処理。人間プレイヤーは「進む」ボタンで進める
+    // よう一旦停止し、駒移動アニメと次イベントを段階表示する
+    if (player.controller_type === 'cpu') {
+      movePlayer(state, player, destination, collectGo)
+      applyLanding(state, player, rolledDoubles, rentMultiplier)
+    } else {
+      state.game.phase = 'await_card_move'
+      state.game.pending_action = {
+        kind: 'card_move',
+        playerId: player.id,
+        cardDeck: deck,
+        cardId,
+        destination,
+        collectGo,
+        rentMultiplier,
+        rolledDoubles,
+      }
+    }
     return
   }
 
@@ -745,6 +784,23 @@ export function purchaseEngine(
   runCpuTurns(state)
 }
 
+export function advanceCardEngine(state: MutableGameState, playerId: string) {
+  if (state.game.phase !== 'await_card_move') {
+    throw new Error('advance_not_available')
+  }
+  const pending = state.game.pending_action
+  if (pending.kind !== 'card_move' || pending.playerId !== playerId) {
+    throw new Error('advance_not_available')
+  }
+  const player = state.players.find((item) => item.id === playerId)
+  if (!player) throw new Error('player_not_found')
+
+  const { destination, collectGo, rentMultiplier, rolledDoubles } = pending
+  state.game.pending_action = {}
+  movePlayer(state, player, destination, collectGo)
+  applyLanding(state, player, rolledDoubles, rentMultiplier)
+}
+
 export function auctionEngine(
   state: MutableGameState,
   playerId: string,
@@ -1003,6 +1059,15 @@ export function runCpuTurns(state: MutableGameState, maxTurns = 16) {
     }
     if (state.game.phase === 'await_roll') {
       rollTurnEngine(state, player.id)
+      count += 1
+      continue
+    }
+    // 人間が「進む」待ちのまま CPU 化された場合に進行を続行する
+    if (
+      state.game.phase === 'await_card_move' &&
+      state.game.pending_action.kind === 'card_move'
+    ) {
+      advanceCardEngine(state, player.id)
       count += 1
       continue
     }

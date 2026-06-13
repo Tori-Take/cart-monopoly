@@ -68,6 +68,7 @@ function phaseLabel(phase: string) {
     {
       lobby: 'ロビー',
       await_roll: 'サイコロ待ち',
+      await_card_move: 'カード移動',
       await_purchase: '購入判断',
       auction: '競売',
       manage_debt: '資産整理',
@@ -453,9 +454,14 @@ export function HostGame({
       ) : (
         <div className="turnCenter">
           <p>{phaseLabel(bundle.game.phase)}</p>
-          {lastCard ? (
+          {!pendingSpace && lastCard ? (
             <div className="rcardSlot rcardSlot--center">
               <RichCard card={lastCard} />
+              {bundle.game.phase === 'await_card_move' ? (
+                <p className="advanceHint">
+                  {currentPlayer?.display_name ?? 'プレイヤー'} が「進む」を押すと駒が移動します
+                </p>
+              ) : null}
             </div>
           ) : null}
           <div className="diceDisplay">
@@ -968,6 +974,23 @@ export function HostGame({
                   サイコロを振る
                 </button>
               ) : null}
+              {bundle.game.phase === 'await_card_move' ? (
+                <button
+                  type="button"
+                  onClick={() =>
+                    run(() =>
+                      hostPlayerActionAction(
+                        slug,
+                        bundle.game.id,
+                        currentPlayer.id,
+                        'advance_card',
+                      ),
+                    )
+                  }
+                >
+                  進む
+                </button>
+              ) : null}
               {bundle.game.phase === 'await_purchase' ? (
                 <>
                   <button
@@ -1153,6 +1176,10 @@ export function HostGame({
         .auctionStatus__bidder { font-size: 11px; color: #181413; }
         .rcardSlot { width: 100%; }
         .rcardSlot--center { width: 340px; max-width: 100%; margin: 6px auto; }
+        .advanceHint {
+          margin: 8px auto 0; max-width: 320px;
+          color: #7f1d1d; font-size: 12px; font-weight: 800; text-align: center;
+        }
         .diceDisplay { display: flex; gap: 7px; }
         .diceDisplay b {
           width: 42px; aspect-ratio: 1; display: grid; place-items: center;
