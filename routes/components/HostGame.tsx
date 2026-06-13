@@ -14,6 +14,7 @@ import type {
   ControllerType,
   GameBundle,
   GameEvent,
+  GameSpeed,
   TokenId,
 } from '../_types'
 import { TOKENS, getCard, getSpace } from '../gameData'
@@ -27,6 +28,7 @@ import {
   hostPlayerActionAction,
   removePlayerSlotAction,
   rotateJoinSecretAction,
+  setGameSpeedAction,
   setPauseAction,
   startGameAction,
 } from '../server/actions'
@@ -74,6 +76,17 @@ function phaseLabel(phase: string) {
 // サイコロ等のコメントが出てから駒が歩き出すまでの待ち時間 (ms)。
 // この間にプレイヤーがコメントを読めるようにする。
 const MOVE_READ_DELAY = 2200
+
+const SPEED_FACTORS: Record<GameSpeed, number> = {
+  very_slow: 1.6, slow: 1.3, normal: 1.0, fast: 0.65, very_fast: 0.4,
+}
+const SPEED_OPTIONS: { value: GameSpeed; label: string }[] = [
+  { value: 'very_slow', label: 'とてもゆっくり' },
+  { value: 'slow',      label: 'ゆっくり' },
+  { value: 'normal',    label: 'ふつう' },
+  { value: 'fast',      label: 'はやい' },
+  { value: 'very_fast', label: 'とても速い' },
+]
 
 const EVENT_ICONS: Record<GameEvent['event_type'], string> = {
   system: 'ℹ️',
@@ -125,11 +138,20 @@ export function HostGame({
   // この時刻まで駒の歩行を止め、先にコメントを読ませる。
   const moveGateRef = useRef(0)
 
+  const speed: GameSpeed =
+    SPEED_FACTORS[bundle.game.settings.speed as GameSpeed] !== undefined
+      ? (bundle.game.settings.speed as GameSpeed)
+      : 'normal'
+  const speedFactor = SPEED_FACTORS[speed]
+  const speedFactorRef = useRef(speedFactor)
+  useEffect(() => { speedFactorRef.current = speedFactor }, [speedFactor])
+
   const showNextBanner = useCallback(() => {
     const next = eventQueueRef.current.shift() ?? null
     setBanner(next)
     if (next) {
-      const delay = eventQueueRef.current.length >= 3 ? 2000 : 3400
+      const base = eventQueueRef.current.length >= 3 ? 2000 : 3400
+      const delay = Math.round(base * speedFactorRef.current)
       bannerTimerRef.current = window.setTimeout(showNextBanner, delay)
     } else {
       bannerTimerRef.current = null
@@ -202,8 +224,9 @@ export function HostGame({
     [],
   )
 
-  // 表示位置を実位置へ1マスずつ追従させる (280ms/歩)
+  // 表示位置を実位置へ1マスずつ追従させる (280ms/歩 × speedFactor)
   useEffect(() => {
+    const interval = Math.round(280 * speedFactor)
     const timer = window.setInterval(() => {
       // コメントの「読む間」が明けるまでは駒を動かさない（初回配置は除く）
       const holding = Date.now() < moveGateRef.current
@@ -231,9 +254,9 @@ export function HostGame({
         }
         return changed ? next : current
       })
-    }, 280)
+    }, interval)
     return () => window.clearInterval(timer)
-  }, [bundle.players])
+  }, [bundle.players, speedFactor])
 
   // 新着イベントをバナーのキューへ積む
   useEffect(() => {
@@ -251,7 +274,7 @@ export function HostGame({
     if (fresh.length === 0) return
     lastEventIdRef.current = events[events.length - 1]?.id ?? lastId
     // コメントを読む時間を確保するため、新着イベント直後は駒の歩行を一拍止める
-    moveGateRef.current = Date.now() + MOVE_READ_DELAY
+    moveGateRef.current = Date.now() + MOVE_READ_DELAY * speedFactorRef.current
     eventQueueRef.current.push(...fresh)
     if (eventQueueRef.current.length > 8) {
       eventQueueRef.current = eventQueueRef.current.slice(-6)
@@ -844,6 +867,29 @@ export function HostGame({
           )}
         </section>
 
+        <section className="panelCard speedCard">
+          <span className="sectionLabel">進行スピード</span>
+          <select
+            value={speed}
+            disabled={busy}
+            onChange={(event) => {
+              const next = event.target.value as GameSpeed
+              setBundle((current) => ({
+                ...current,
+                game: {
+                  ...current.game,
+                  settings: { ...current.game.settings, speed: next },
+                },
+              }))
+              void setGameSpeedAction(slug, bundle.game.id, next)
+            }}
+          >
+            {SPEED_OPTIONS.map((opt) => (
+              <option key={opt.value} value={opt.value}>{opt.label}</option>
+            ))}
+          </select>
+        </section>
+
         {currentPlayer?.controller_type === 'pc' &&
         bundle.game.status === 'playing' ? (
           <section className="panelCard">
@@ -1161,6 +1207,8 @@ export function HostGame({
         .danger { background: #fecaca; }
         .correctionButtons { display: flex; gap: 4px; }
         .primaryActions, .pcActions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+        .speedCard { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+        .speedCard select { flex: 1; }
         .primaryActions .startButton { grid-column: 1 / -1; min-height: 54px; background: #d5282f; color: #fff; font-size: 17px; }
         .eventLog { display: grid; gap: 5px; max-height: 190px; overflow-y: auto; }
         .eventLog > div { display: grid; grid-template-columns: 40px 1fr; gap: 6px; font-size: 11px; border-bottom: 1px solid rgba(255,255,255,.06); padding-bottom: 4px; }

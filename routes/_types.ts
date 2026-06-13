@@ -27,9 +27,12 @@ export type EventType =
   | 'bankruptcy'
   | 'finish'
 
+export type GameSpeed = 'very_slow' | 'slow' | 'normal' | 'fast' | 'very_fast'
+
 export interface GameSettings {
   startingMoney: number
   salary: number
+  speed: GameSpeed
 }
 
 export interface PurchasePending {

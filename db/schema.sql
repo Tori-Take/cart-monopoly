@@ -20,7 +20,7 @@ create table if not exists monopoly_games (
   chance_deck       jsonb not null default '[]'::jsonb,
   chest_deck        jsonb not null default '[]'::jsonb,
   pending_action    jsonb not null default '{}'::jsonb,
-  settings          jsonb not null default '{"startingMoney":1500,"salary":200}'::jsonb,
+  settings          jsonb not null default '{"startingMoney":1500,"salary":200,"speed":"normal"}'::jsonb,
   version           integer not null default 1,
   created_by        uuid references profiles(id) on delete set null,
   started_at        timestamptz,
