@@ -209,10 +209,12 @@ export function MobileController({
   async function connect() {
     setBusy(true)
     setError(null)
+    // 端末名が未入力ならフォールバック名で接続する
+    const effectiveLabel = label.trim() || 'スマホ'
     const result = await connectControllerAction(
       slug,
       code,
-      label,
+      effectiveLabel,
       initialGameId,
       initialJoinSecret,
     )
@@ -225,7 +227,7 @@ export function MobileController({
       controllerId: result.controllerId,
       controllerToken: result.controllerToken,
       gameId: result.gameId,
-      label,
+      label: effectiveLabel,
     }
     setIdentity(next)
     window.localStorage.setItem(storageKey, JSON.stringify(next))
@@ -325,7 +327,7 @@ export function MobileController({
           <button
             type="button"
             className="primaryButton"
-            disabled={!preview.ok || busy || !label.trim()}
+            disabled={!preview.ok || busy}
             onClick={connect}
           >
             {busy ? '接続中...' : 'ホストへ接続'}
