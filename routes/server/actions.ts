@@ -14,6 +14,7 @@ import type {
   PropertyState,
   PublicGameState,
   TokenId,
+  TokenSize,
 } from '../_types'
 import {
   BOARD,
@@ -86,6 +87,7 @@ function normalizeGame(row: Record<string, unknown>) {
       startingMoney: 1500,
       salary: 200,
       speed: 'normal' as const,
+      tokenSize: 'normal' as const,
       ...(row.settings && typeof row.settings === 'object' ? row.settings : {}),
     },
   } as Game
@@ -769,6 +771,37 @@ export async function setGameSpeedAction(
   const { error } = await supabase
     .from('monopoly_games')
     .update({ settings: { startingMoney: 1500, salary: 200, ...current, speed } })
+    .eq('organization_id', ctx.actor.organizationId)
+    .eq('id', gameId)
+  return error
+    ? { ok: false as const, error: error.message }
+    : { ok: true as const }
+}
+
+const TOKEN_SIZE_VALUES: TokenSize[] = ['small', 'normal', 'large', 'xlarge']
+
+export async function setGameTokenSizeAction(
+  slug: string,
+  gameId: string,
+  tokenSize: string,
+) {
+  const ctx = await requireHost(slug)
+  if (!TOKEN_SIZE_VALUES.includes(tokenSize as TokenSize)) {
+    return { ok: false as const, error: 'invalid_token_size' }
+  }
+  const supabase = getAdminSupabase()
+  const { data: row } = await supabase
+    .from('monopoly_games')
+    .select('settings')
+    .eq('organization_id', ctx.actor.organizationId)
+    .eq('id', gameId)
+    .maybeSingle()
+  if (!row) return { ok: false as const, error: 'game_not_found' }
+  const current =
+    row.settings && typeof row.settings === 'object' ? row.settings : {}
+  const { error } = await supabase
+    .from('monopoly_games')
+    .update({ settings: { startingMoney: 1500, salary: 200, ...current, tokenSize } })
     .eq('organization_id', ctx.actor.organizationId)
     .eq('id', gameId)
   return error

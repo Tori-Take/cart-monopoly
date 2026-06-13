@@ -28,11 +28,13 @@ export type EventType =
   | 'finish'
 
 export type GameSpeed = 'very_slow' | 'slow' | 'normal' | 'fast' | 'very_fast'
+export type TokenSize = 'small' | 'normal' | 'large' | 'xlarge'
 
 export interface GameSettings {
   startingMoney: number
   salary: number
   speed: GameSpeed
+  tokenSize: TokenSize
 }
 
 export interface PurchasePending {

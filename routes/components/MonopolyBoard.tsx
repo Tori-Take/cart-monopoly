@@ -55,11 +55,13 @@ export function MonopolyBoard({
   properties,
   currentPlayerId,
   center,
+  tokenScale = 1,
 }: {
   players: Player[]
   properties: PropertyState[]
   currentPlayerId: string | null
   center: ReactNode
+  tokenScale?: number
 }) {
   const boardRef = useRef<HTMLDivElement | null>(null)
   const spaceRefs = useRef<Array<HTMLElement | null>>([])
@@ -160,7 +162,10 @@ export function MonopolyBoard({
         })}
 
         {anchors ? (
-          <div className="tokenLayer">
+          <div
+            className="tokenLayer"
+            style={{ '--token-scale': tokenScale } as CSSProperties}
+          >
             {activeTokens.map((player) => {
               const anchor = anchors[player.position] ?? { x: 50, y: 50 }
               const group = tokensByPosition.get(player.position) ?? []
@@ -399,7 +404,7 @@ export function MonopolyBoard({
           border-radius: 50%;
           background: rgba(255,255,255,.78);
           box-shadow: 0 3px 6px rgba(0,0,0,.35);
-          transform: translate(-50%, -50%);
+          transform: translate(-50%, -50%) scale(var(--token-scale, 1));
           transition:
             top 190ms cubic-bezier(.22, .8, .35, 1.15),
             left 190ms cubic-bezier(.22, .8, .35, 1.15);

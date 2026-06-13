@@ -16,6 +16,7 @@ import type {
   GameEvent,
   GameSpeed,
   TokenId,
+  TokenSize,
 } from '../_types'
 import { TOKENS, getCard, getSpace } from '../gameData'
 import {
@@ -29,6 +30,7 @@ import {
   removePlayerSlotAction,
   rotateJoinSecretAction,
   setGameSpeedAction,
+  setGameTokenSizeAction,
   setPauseAction,
   startGameAction,
 } from '../server/actions'
@@ -86,6 +88,15 @@ const SPEED_OPTIONS: { value: GameSpeed; label: string }[] = [
   { value: 'normal',    label: 'ふつう' },
   { value: 'fast',      label: 'はやい' },
   { value: 'very_fast', label: 'とても速い' },
+]
+const TOKEN_SIZE_SCALES: Record<TokenSize, number> = {
+  small: 0.65, normal: 1.0, large: 1.45, xlarge: 2.0,
+}
+const TOKEN_SIZE_OPTIONS: { value: TokenSize; label: string }[] = [
+  { value: 'small',  label: '小さい' },
+  { value: 'normal', label: 'ふつう' },
+  { value: 'large',  label: '大きい' },
+  { value: 'xlarge', label: '特大' },
 ]
 
 const EVENT_ICONS: Record<GameEvent['event_type'], string> = {
@@ -145,6 +156,12 @@ export function HostGame({
   const speedFactor = SPEED_FACTORS[speed]
   const speedFactorRef = useRef(speedFactor)
   useEffect(() => { speedFactorRef.current = speedFactor }, [speedFactor])
+
+  const tokenSizeKey: TokenSize =
+    TOKEN_SIZE_SCALES[bundle.game.settings.tokenSize as TokenSize] !== undefined
+      ? (bundle.game.settings.tokenSize as TokenSize)
+      : 'normal'
+  const tokenScale = TOKEN_SIZE_SCALES[tokenSizeKey]
 
   const showNextBanner = useCallback(() => {
     const next = eventQueueRef.current.shift() ?? null
@@ -515,6 +532,7 @@ export function HostGame({
             properties={bundle.properties}
             currentPlayerId={bundle.game.current_player_id}
             center={center}
+            tokenScale={tokenScale}
           />
         </div>
       </section>
@@ -885,6 +903,29 @@ export function HostGame({
             }}
           >
             {SPEED_OPTIONS.map((opt) => (
+              <option key={opt.value} value={opt.value}>{opt.label}</option>
+            ))}
+          </select>
+        </section>
+
+        <section className="panelCard speedCard">
+          <span className="sectionLabel">駒の大きさ</span>
+          <select
+            value={tokenSizeKey}
+            disabled={busy}
+            onChange={(event) => {
+              const next = event.target.value as TokenSize
+              setBundle((current) => ({
+                ...current,
+                game: {
+                  ...current.game,
+                  settings: { ...current.game.settings, tokenSize: next },
+                },
+              }))
+              void setGameTokenSizeAction(slug, bundle.game.id, next)
+            }}
+          >
+            {TOKEN_SIZE_OPTIONS.map((opt) => (
               <option key={opt.value} value={opt.value}>{opt.label}</option>
             ))}
           </select>
