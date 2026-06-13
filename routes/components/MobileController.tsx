@@ -85,7 +85,7 @@ export function MobileController({
     preview.ok ? null : preview.error,
   )
   const [busy, setBusy] = useState(false)
-  const [bid, setBid] = useState(10)
+  const [bid, setBid] = useState(0)
   const [tradeTarget, setTradeTarget] = useState('')
   const [offeredCash, setOfferedCash] = useState(0)
   const [requestedCash, setRequestedCash] = useState(0)
@@ -182,11 +182,20 @@ export function MobileController({
   const effectiveTradeTarget = tradeTarget || opponents[0]?.id || ''
   const pending = state?.game.pending_action
   const auction = pending?.kind === 'auction' ? pending : null
+  const minBid = auction ? auction.highestBid + 10 : 0
+  const maxBid = me?.money ?? 0
+  const bidValue = Math.min(Math.max(bid, minBid), Math.max(minBid, maxBid))
+  const canAffordBid = maxBid >= minBid
   const incomingTrade =
     pending?.kind === 'trade' && pending.toPlayerId === me?.id ? pending : null
   const outgoingTrade =
     pending?.kind === 'trade' && pending.fromPlayerId === me?.id ? pending : null
   const isMyTurn = Boolean(me && currentPlayer?.id === me.id)
+
+  const auctionActive = Boolean(auction)
+  useEffect(() => {
+    if (!auctionActive) setBid(0)
+  }, [auctionActive])
 
   async function connect() {
     setBusy(true)
@@ -453,22 +462,31 @@ export function MobileController({
                       (player) => player.id === auction.highestBidderId,
                     )?.display_name ?? '入札なし'}
                   </p>
-                  <input
-                    type="number"
-                    inputMode="numeric"
-                    min={auction.highestBid + 10}
-                    step={10}
-                    value={bid}
-                    onChange={(event) => setBid(Number(event.target.value))}
-                  />
+                  <div className="bidStepper">
+                    <button
+                      type="button"
+                      className="stepButton"
+                      disabled={busy || bidValue <= minBid}
+                      onClick={() => setBid(Math.max(minBid, bidValue - 10))}
+                    >
+                      −
+                    </button>
+                    <strong>{money(bidValue)}</strong>
+                    <button
+                      type="button"
+                      className="stepButton"
+                      disabled={busy || bidValue >= maxBid}
+                      onClick={() => setBid(Math.min(maxBid, bidValue + 10))}
+                    >
+                      ＋
+                    </button>
+                  </div>
                   <div>
                     <button
                       type="button"
-                      disabled={busy}
+                      disabled={busy || !canAffordBid}
                       onClick={() =>
-                        void act('auction_bid', {
-                          amount: Math.max(auction.highestBid + 10, bid),
-                        })
+                        void act('auction_bid', { amount: bidValue })
                       }
                     >
                       入札
@@ -844,6 +862,9 @@ export function MobileController({
         .decisionPanel > strong { color: #86efac; font-size: 26px; }
         .auctionPanel h3 { margin: 0; font-size: 20px; }
         .auctionPanel p { margin: 0; color: #d9c9c4; }
+        .auctionPanel > .bidStepper { grid-template-columns: 64px 1fr 64px; align-items: center; gap: 10px; }
+        .bidStepper strong { text-align: center; font-size: 26px; font-family: Georgia, serif; color: #f7f0dd; }
+        .bidStepper .stepButton { min-height: 56px; font-size: 30px; line-height: 1; padding: 0; }
         .debtPanel { border-color: rgba(248,113,113,.5); background: rgba(127,29,29,.2); }
         .debtPanel p { margin: 0; font-size: 12px; line-height: 1.55; }
         .dangerButton { background: #991b1b; }
