@@ -1,7 +1,9 @@
 export type GameStatus = 'lobby' | 'playing' | 'paused' | 'finished'
 export type GamePhase =
   | 'lobby'
+  | 'presenting'
   | 'await_roll'
+  | 'await_card_move'
   | 'await_purchase'
   | 'auction'
   | 'manage_debt'
@@ -27,15 +29,31 @@ export type EventType =
   | 'bankruptcy'
   | 'finish'
 
+export type GameSpeed = 'very_slow' | 'slow' | 'normal' | 'fast' | 'very_fast'
+export type TokenSize = 'small' | 'normal' | 'large' | 'xlarge'
+
 export interface GameSettings {
   startingMoney: number
   salary: number
+  speed: GameSpeed
+  tokenSize: TokenSize
 }
 
 export interface PurchasePending {
   kind: 'purchase'
   playerId: string
   spaceIndex: number
+  rolledDoubles: boolean
+}
+
+export interface CardMovePending {
+  kind: 'card_move'
+  playerId: string
+  cardDeck: 'chance' | 'chest'
+  cardId: string
+  destination: number
+  collectGo: boolean
+  rentMultiplier: number
   rolledDoubles: boolean
 }
 
@@ -70,11 +88,22 @@ export interface TradePending {
   requestedSpaceIndexes: number[]
 }
 
+export interface TurnTransitionPending {
+  kind: 'turn_transition'
+  stage: 'handoff' | 'announcement'
+  nextPlayerId: string
+  incrementTurn: boolean
+  message: string
+  finishGame: boolean
+}
+
 export type PendingAction =
   | PurchasePending
+  | CardMovePending
   | AuctionPending
   | DebtPending
   | TradePending
+  | TurnTransitionPending
   | Record<string, never>
 
 export interface Game {

@@ -10,7 +10,7 @@ create table if not exists monopoly_games (
   status            text not null default 'lobby'
                     check (status in ('lobby', 'playing', 'paused', 'finished')),
   phase             text not null default 'lobby'
-                    check (phase in ('lobby', 'await_roll', 'await_purchase', 'auction', 'manage_debt', 'finished')),
+                    check (phase in ('lobby', 'presenting', 'await_roll', 'await_card_move', 'await_purchase', 'auction', 'manage_debt', 'finished')),
   current_player_id uuid,
   winner_player_id  uuid,
   turn_number       integer not null default 0,
@@ -20,7 +20,7 @@ create table if not exists monopoly_games (
   chance_deck       jsonb not null default '[]'::jsonb,
   chest_deck        jsonb not null default '[]'::jsonb,
   pending_action    jsonb not null default '{}'::jsonb,
-  settings          jsonb not null default '{"startingMoney":1500,"salary":200}'::jsonb,
+  settings          jsonb not null default '{"startingMoney":1500,"salary":200,"speed":"normal","tokenSize":"normal"}'::jsonb,
   version           integer not null default 1,
   created_by        uuid references profiles(id) on delete set null,
   started_at        timestamptz,
@@ -29,6 +29,11 @@ create table if not exists monopoly_games (
   updated_at        timestamptz not null default now(),
   unique (organization_id, join_code)
 );
+
+-- 既存環境にも最新のフェーズ一覧を反映する。
+alter table monopoly_games drop constraint if exists monopoly_games_phase_check;
+alter table monopoly_games add constraint monopoly_games_phase_check
+  check (phase in ('lobby', 'presenting', 'await_roll', 'await_card_move', 'await_purchase', 'auction', 'manage_debt', 'finished'));
 
 create table if not exists monopoly_players (
   id                    uuid primary key default gen_random_uuid(),

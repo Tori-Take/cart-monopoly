@@ -7,12 +7,14 @@ import {
   useState,
   type CSSProperties,
 } from 'react'
-import type { PublicGameState } from '../_types'
+import type { BoardSpace, PublicGameState } from '../_types'
 import { getSpace } from '../gameData'
+import { RichCard, RICH_CARD_CSS } from './RichCard'
 import {
   connectControllerAction,
   controllerActionAction,
   getControllerStateAction,
+  leaveControllerAction,
 } from '../server/actions'
 import { TokenPiece } from './TokenPiece'
 
@@ -79,17 +81,18 @@ export function MobileController({
   const storageKey = `monopoly-controller:${slug}:${code}:${initialGameId ?? ''}`
   const [identity, setIdentity] = useState<Identity | null>(null)
   const [state, setState] = useState<PublicGameState | null>(null)
-  const [label, setLabel] = useState('MY PHONE')
+  const [label, setLabel] = useState('')
   const [error, setError] = useState<string | null>(
     preview.ok ? null : preview.error,
   )
   const [busy, setBusy] = useState(false)
-  const [bid, setBid] = useState(10)
+  const [bid, setBid] = useState(0)
   const [tradeTarget, setTradeTarget] = useState('')
   const [offeredCash, setOfferedCash] = useState(0)
   const [requestedCash, setRequestedCash] = useState(0)
   const [offeredProperty, setOfferedProperty] = useState('')
   const [requestedProperty, setRequestedProperty] = useState('')
+  const [richView, setRichView] = useState<BoardSpace | null>(null)
   const pollingRef = useRef(false)
   // ポーリング由来のエラーだけを次回成功時にクリアする (操作エラーを即座に消さない)
   const pollErrorRef = useRef(false)
@@ -181,19 +184,37 @@ export function MobileController({
   const effectiveTradeTarget = tradeTarget || opponents[0]?.id || ''
   const pending = state?.game.pending_action
   const auction = pending?.kind === 'auction' ? pending : null
+  const minBid = auction ? auction.highestBid + 10 : 0
+  const maxBid = me?.money ?? 0
+  const bidValue = Math.min(Math.max(bid, minBid), Math.max(minBid, maxBid))
+  const canAffordBid = maxBid >= minBid
   const incomingTrade =
     pending?.kind === 'trade' && pending.toPlayerId === me?.id ? pending : null
   const outgoingTrade =
     pending?.kind === 'trade' && pending.fromPlayerId === me?.id ? pending : null
   const isMyTurn = Boolean(me && currentPlayer?.id === me.id)
 
+  const auctionActive = Boolean(auction)
+  useEffect(() => {
+    if (!auctionActive) setBid(0)
+  }, [auctionActive])
+
+  useEffect(() => {
+    if (!richView) return
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setRichView(null) }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [richView])
+
   async function connect() {
     setBusy(true)
     setError(null)
+    // 端末名が未入力ならフォールバック名で接続する
+    const effectiveLabel = label.trim() || 'スマホ'
     const result = await connectControllerAction(
       slug,
       code,
-      label,
+      effectiveLabel,
       initialGameId,
       initialJoinSecret,
     )
@@ -206,7 +227,7 @@ export function MobileController({
       controllerId: result.controllerId,
       controllerToken: result.controllerToken,
       gameId: result.gameId,
-      label,
+      label: effectiveLabel,
     }
     setIdentity(next)
     window.localStorage.setItem(storageKey, JSON.stringify(next))
@@ -233,11 +254,31 @@ export function MobileController({
     if (!result.ok) setError(errorLabel(result.error))
   }
 
-  function disconnectLocal() {
-    if (!window.confirm('この端末の接続情報を消去しますか？')) return
+  async function disconnectLocal() {
+    if (
+      !window.confirm(
+        'この端末の接続を解除しますか？\nホストが別の端末を割り当てられるようになります。',
+      )
+    )
+      return
+    const current = identity
     setIdentity(null)
     setState(null)
     window.localStorage.removeItem(storageKey)
+    if (current) {
+      // サーバー側でも席を解放する（失敗してもローカルは解除済み）
+      try {
+        await leaveControllerAction(
+          slug,
+          code,
+          current.controllerId,
+          current.controllerToken,
+          current.gameId,
+        )
+      } catch {
+        /* ローカル解除済みのため無視 */
+      }
+    }
   }
 
   function proposeTrade() {
@@ -261,7 +302,11 @@ export function MobileController({
           <h1>MONOPOLY</h1>
         </div>
         {identity ? (
-          <button type="button" className="ghostButton" onClick={disconnectLocal}>
+          <button
+            type="button"
+            className="ghostButton"
+            onClick={() => void disconnectLocal()}
+          >
             端末解除
           </button>
         ) : null}
@@ -282,7 +327,7 @@ export function MobileController({
           <button
             type="button"
             className="primaryButton"
-            disabled={!preview.ok || busy || !label.trim()}
+            disabled={!preview.ok || busy}
             onClick={connect}
           >
             {busy ? '接続中...' : 'ホストへ接続'}
@@ -340,6 +385,31 @@ export function MobileController({
                 </div>
               </div>
 
+              {state.game.phase === 'presenting' ? (
+                <div className="turnWaitNotice">
+                  盤面の演出中です。次の操作が表示されるまでお待ちください。
+                </div>
+              ) : null}
+
+              {!isMyTurn &&
+              currentPlayer?.controller_type === 'cpu' &&
+              state.game.phase === 'await_roll' ? (
+                <div className="turnWaitNotice">
+                  CPUのターンです。盤面の演出完了後に自動で進みます。
+                </div>
+              ) : null}
+
+              {isMyTurn && state.game.phase === 'await_card_move' ? (
+                <button
+                  type="button"
+                  className="rollButton"
+                  disabled={busy}
+                  onClick={() => void act('advance_card')}
+                >
+                  進む
+                </button>
+              ) : null}
+
               {isMyTurn && state.game.phase === 'await_roll' && !pending?.kind ? (
                 <>
                   {me.in_jail ? (
@@ -378,7 +448,10 @@ export function MobileController({
               state.game.phase === 'await_purchase' &&
               pending?.kind === 'purchase' ? (
                 <div className="decisionPanel">
-                  <span>{getSpace(pending.spaceIndex).name}</span>
+                  <span
+                    style={{ cursor: 'pointer', textDecoration: 'underline dotted' }}
+                    onClick={() => setRichView(getSpace(pending.spaceIndex))}
+                  >{getSpace(pending.spaceIndex).name}</span>
                   <strong>{money(getSpace(pending.spaceIndex).price ?? 0)}</strong>
                   <div>
                     <button
@@ -415,22 +488,31 @@ export function MobileController({
                       (player) => player.id === auction.highestBidderId,
                     )?.display_name ?? '入札なし'}
                   </p>
-                  <input
-                    type="number"
-                    inputMode="numeric"
-                    min={auction.highestBid + 10}
-                    step={10}
-                    value={bid}
-                    onChange={(event) => setBid(Number(event.target.value))}
-                  />
+                  <div className="bidStepper">
+                    <button
+                      type="button"
+                      className="stepButton"
+                      disabled={busy || bidValue <= minBid}
+                      onClick={() => setBid(Math.max(minBid, bidValue - 10))}
+                    >
+                      −
+                    </button>
+                    <strong>{money(bidValue)}</strong>
+                    <button
+                      type="button"
+                      className="stepButton"
+                      disabled={busy || bidValue >= maxBid}
+                      onClick={() => setBid(Math.min(maxBid, bidValue + 10))}
+                    >
+                      ＋
+                    </button>
+                  </div>
                   <div>
                     <button
                       type="button"
-                      disabled={busy}
+                      disabled={busy || !canAffordBid}
                       onClick={() =>
-                        void act('auction_bid', {
-                          amount: Math.max(auction.highestBid + 10, bid),
-                        })
+                        void act('auction_bid', { amount: bidValue })
                       }
                     >
                       入札
@@ -528,6 +610,7 @@ export function MobileController({
                     key={property.id}
                     className="deedCard"
                     style={{ '--deed-color': space.color ?? '#252525' } as CSSProperties}
+                    onClick={() => setRichView(space)}
                   >
                     <div />
                     <strong>{space.name}</strong>
@@ -799,12 +882,19 @@ export function MobileController({
         .mobileDice { display: flex; gap: 7px; }
         .mobileDice b { width: 42px; aspect-ratio: 1; display: grid; place-items: center; border-radius: 8px; background: #f7f0dd; color: #181413; box-shadow: 0 4px 0 #a99b9f; font-family: Georgia, serif; font-size: 24px; }
         .rollButton { min-height: 74px; font-size: 20px; box-shadow: 0 5px 0 #7d191d; }
+        .turnWaitNotice {
+          padding: 14px; border-radius: 9px; background: #374151;
+          color: #fff; font-size: 14px; font-weight: 800; text-align: center;
+        }
         .jailActions, .twoButtons, .decisionPanel > div, .auctionPanel > div { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
         .secondaryButton { background: #e8dfcd; color: #181413; }
         .decisionPanel, .auctionPanel, .debtPanel { display: grid; gap: 9px; padding: 12px; border: 1px solid rgba(255,255,255,.13); border-radius: 9px; }
         .decisionPanel > strong { color: #86efac; font-size: 26px; }
         .auctionPanel h3 { margin: 0; font-size: 20px; }
         .auctionPanel p { margin: 0; color: #d9c9c4; }
+        .auctionPanel > .bidStepper { grid-template-columns: 64px 1fr 64px; align-items: center; gap: 10px; }
+        .bidStepper strong { text-align: center; font-size: 26px; font-family: Georgia, serif; color: #f7f0dd; }
+        .bidStepper .stepButton { min-height: 56px; font-size: 30px; line-height: 1; padding: 0; }
         .debtPanel { border-color: rgba(248,113,113,.5); background: rgba(127,29,29,.2); }
         .debtPanel p { margin: 0; font-size: 12px; line-height: 1.55; }
         .dangerButton { background: #991b1b; }
@@ -831,6 +921,10 @@ export function MobileController({
         .eventCard { display: grid; gap: 5px; }
         .eventCard p { margin: 0; padding-bottom: 5px; border-bottom: 1px solid rgba(24,20,19,.1); font-size: 11px; }
         .muted { color: #756560; font-size: 12px; }
+        .rcardModal { position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; padding: 24px; background: rgba(10,6,8,.72); }
+        .rcardModal__inner { width: min(86vw, 300px); display: grid; gap: 12px; }
+        .rcardModal__close { min-height: 44px; border: 0; border-radius: 8px; background: #d5282f; color: #fff; font-weight: 800; font: inherit; cursor: pointer; }
+        .deedCard { cursor: pointer; }
         .mobileError {
           position: sticky;
           z-index: 20;
@@ -843,7 +937,27 @@ export function MobileController({
           font-weight: 800;
           box-shadow: 0 8px 24px rgba(0,0,0,.3);
         }
+        ${RICH_CARD_CSS}
       `}</style>
+      {richView ? (
+        <div
+          className="rcardModal"
+          role="dialog"
+          aria-modal="true"
+          onClick={() => setRichView(null)}
+        >
+          <div className="rcardModal__inner" onClick={(e) => e.stopPropagation()}>
+            <RichCard space={richView} />
+            <button
+              type="button"
+              className="rcardModal__close"
+              onClick={() => setRichView(null)}
+            >
+              閉じる
+            </button>
+          </div>
+        </div>
+      ) : null}
     </main>
   )
 }

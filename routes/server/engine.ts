@@ -115,14 +115,43 @@ function finishIfNeeded(state: MutableGameState) {
   return true
 }
 
-function startTurn(state: MutableGameState, player: Player) {
+function announceTurn(
+  state: MutableGameState,
+  player: Player,
+  message: string,
+) {
   state.game.current_player_id = player.id
-  state.game.phase = 'await_roll'
-  state.game.pending_action = {}
+  state.game.phase = 'presenting'
+  state.game.pending_action = {
+    kind: 'turn_transition',
+    stage: 'announcement',
+    nextPlayerId: player.id,
+    incrementTurn: false,
+    message,
+    finishGame: false,
+  }
   state.game.dice_1 = null
   state.game.dice_2 = null
   state.game.doubles_count = 0
-  emit(state, 'turn', `${player.display_name} のターンです`, player.id)
+  emit(state, 'turn', message, player.id)
+}
+
+function queueTurnTransition(
+  state: MutableGameState,
+  nextPlayer: Player,
+  incrementTurn: boolean,
+  message: string,
+  finishGame = false,
+) {
+  state.game.phase = 'presenting'
+  state.game.pending_action = {
+    kind: 'turn_transition',
+    stage: 'handoff',
+    nextPlayerId: nextPlayer.id,
+    incrementTurn,
+    message,
+    finishGame,
+  }
 }
 
 function endTurn(
@@ -130,18 +159,35 @@ function endTurn(
   player: Player,
   rolledDoubles: boolean,
 ) {
-  if (finishIfNeeded(state)) return
+  const remaining = activePlayers(state)
+  if (remaining.length === 1) {
+    queueTurnTransition(
+      state,
+      remaining[0],
+      false,
+      `${remaining[0].display_name} がゲームに勝利しました`,
+      true,
+    )
+    return
+  }
   if (rolledDoubles && !player.in_jail && !player.bankrupt) {
-    state.game.phase = 'await_roll'
-    state.game.pending_action = {}
-    emit(state, 'turn', `${player.display_name} はゾロ目でもう一度振れます`, player.id)
+    queueTurnTransition(
+      state,
+      player,
+      false,
+      `${player.display_name} はゾロ目でもう一度振れます`,
+    )
     return
   }
 
   const next = nextPlayer(state, player.id)
   if (!next) return
-  state.game.turn_number += 1
-  startTurn(state, next)
+  queueTurnTransition(
+    state,
+    next,
+    true,
+    `${next.display_name} のターンです`,
+  )
 }
 
 function sendToJail(state: MutableGameState, player: Player, reason: string) {
@@ -382,6 +428,19 @@ function drawCard(
           other.money -= effect.amount
         }
       }
+      const per = Math.abs(effect.amount)
+      const total = per * others.length
+      if (others.length > 0) {
+        emit(
+          state,
+          'rent',
+          effect.amount > 0
+            ? `${player.display_name} が${card.title}で各プレイヤーから$${per}ずつ（合計$${total}）受け取りました`
+            : `${player.display_name} が${card.title}で各プレイヤーへ$${per}ずつ（合計$${total}）支払いました`,
+          player.id,
+          { amount: effect.amount > 0 ? total : -total },
+        )
+      }
       if (player.money < 0 && player.controller_type !== 'cpu') {
         state.game.phase = 'manage_debt'
         state.game.pending_action = {
@@ -396,6 +455,15 @@ function drawCard(
       }
     } else if (effect.amount >= 0) {
       player.money += effect.amount
+      if (effect.amount > 0) {
+        emit(
+          state,
+          'rent',
+          `${player.display_name} が${card.title}で銀行から$${effect.amount}を受け取りました`,
+          player.id,
+          { amount: effect.amount },
+        )
+      }
     } else {
       charge(
         state,
@@ -411,23 +479,40 @@ function drawCard(
     return
   }
 
-  if (effect.type === 'move') {
-    movePlayer(state, player, effect.position, effect.collectGo)
-    applyLanding(state, player, rolledDoubles)
-    return
-  }
+  if (effect.type === 'move' || effect.type === 'nearest' || effect.type === 'back') {
+    let destination: number
+    let collectGo: boolean
+    let rentMultiplier = 1
+    if (effect.type === 'move') {
+      destination = effect.position
+      collectGo = effect.collectGo
+    } else if (effect.type === 'nearest') {
+      destination = nearestSpace(player.position, effect.target)
+      collectGo = true
+      rentMultiplier = effect.rentMultiplier
+    } else {
+      destination = (player.position - effect.spaces + 40) % 40
+      collectGo = false
+    }
 
-  if (effect.type === 'nearest') {
-    const destination = nearestSpace(player.position, effect.target)
-    movePlayer(state, player, destination, true)
-    applyLanding(state, player, rolledDoubles, effect.rentMultiplier)
-    return
-  }
-
-  if (effect.type === 'back') {
-    const destination = (player.position - effect.spaces + 40) % 40
-    movePlayer(state, player, destination, false)
-    applyLanding(state, player, rolledDoubles)
+    // CPU は即時に移動して着地処理。人間プレイヤーは「進む」ボタンで進める
+    // よう一旦停止し、駒移動アニメと次イベントを段階表示する
+    if (player.controller_type === 'cpu') {
+      movePlayer(state, player, destination, collectGo)
+      applyLanding(state, player, rolledDoubles, rentMultiplier)
+    } else {
+      state.game.phase = 'await_card_move'
+      state.game.pending_action = {
+        kind: 'card_move',
+        playerId: player.id,
+        cardDeck: deck,
+        cardId,
+        destination,
+        collectGo,
+        rentMultiplier,
+        rolledDoubles,
+      }
+    }
     return
   }
 
@@ -652,8 +737,32 @@ export function startGameEngine(state: MutableGameState) {
   state.game.current_player_id = players[0].id
   state.game.pending_action = {}
   emit(state, 'system', 'ゲームを開始しました')
-  startTurn(state, players[0])
-  runCpuTurns(state)
+  announceTurn(state, players[0], `${players[0].display_name} のターンです`)
+}
+
+export function completeTurnPresentationEngine(state: MutableGameState) {
+  if (
+    state.game.status !== 'playing' ||
+    state.game.phase !== 'presenting' ||
+    state.game.pending_action.kind !== 'turn_transition'
+  ) {
+    throw new Error('presentation_not_pending')
+  }
+  const transition = state.game.pending_action
+  if (transition.finishGame) {
+    if (!finishIfNeeded(state)) throw new Error('finish_not_available')
+    return
+  }
+  const nextPlayer =
+    state.players.find((player) => player.id === transition.nextPlayerId) ?? null
+  if (!nextPlayer || nextPlayer.bankrupt) throw new Error('player_not_found')
+  if (transition.stage === 'handoff') {
+    if (transition.incrementTurn) state.game.turn_number += 1
+    announceTurn(state, nextPlayer, transition.message)
+    return
+  }
+  state.game.phase = 'await_roll'
+  state.game.pending_action = {}
 }
 
 export function rollTurnEngine(state: MutableGameState, playerId: string) {
@@ -743,6 +852,23 @@ export function purchaseEngine(
     startAuction(state, pending.spaceIndex, player, pending.rolledDoubles)
   }
   runCpuTurns(state)
+}
+
+export function advanceCardEngine(state: MutableGameState, playerId: string) {
+  if (state.game.phase !== 'await_card_move') {
+    throw new Error('advance_not_available')
+  }
+  const pending = state.game.pending_action
+  if (pending.kind !== 'card_move' || pending.playerId !== playerId) {
+    throw new Error('advance_not_available')
+  }
+  const player = state.players.find((item) => item.id === playerId)
+  if (!player) throw new Error('player_not_found')
+
+  const { destination, collectGo, rentMultiplier, rolledDoubles } = pending
+  state.game.pending_action = {}
+  movePlayer(state, player, destination, collectGo)
+  applyLanding(state, player, rolledDoubles, rentMultiplier)
 }
 
 export function auctionEngine(
@@ -983,7 +1109,11 @@ export function respondTradeEngine(
 
 export function forceEndTurnEngine(state: MutableGameState) {
   const player = currentPlayer(state)
-  if (!player || state.game.status !== 'playing') return
+  if (
+    !player ||
+    state.game.status !== 'playing' ||
+    state.game.phase === 'presenting'
+  ) return
   state.game.pending_action = {}
   endTurn(state, player, false)
   runCpuTurns(state)
@@ -1003,6 +1133,15 @@ export function runCpuTurns(state: MutableGameState, maxTurns = 16) {
     }
     if (state.game.phase === 'await_roll') {
       rollTurnEngine(state, player.id)
+      count += 1
+      continue
+    }
+    // 人間が「進む」待ちのまま CPU 化された場合に進行を続行する
+    if (
+      state.game.phase === 'await_card_move' &&
+      state.game.pending_action.kind === 'card_move'
+    ) {
+      advanceCardEngine(state, player.id)
       count += 1
       continue
     }

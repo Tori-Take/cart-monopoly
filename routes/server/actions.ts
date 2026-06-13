@@ -9,10 +9,12 @@ import type {
   Game,
   GameBundle,
   GameEvent,
+  GameSpeed,
   Player,
   PropertyState,
   PublicGameState,
   TokenId,
+  TokenSize,
 } from '../_types'
 import {
   BOARD,
@@ -24,7 +26,9 @@ import {
   shuffle,
 } from '../gameData'
 import {
+  advanceCardEngine,
   auctionEngine,
+  completeTurnPresentationEngine,
   declareBankruptcyEngine,
   forceEndTurnEngine,
   managePropertyEngine,
@@ -42,6 +46,9 @@ const APP_ID = 'monopoly'
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 const TOKEN_PATTERN = /^[0-9a-f]{64}$/i
+
+// ロビーだけでなく対局中・一時停止中も端末の参加を受け付ける
+const JOINABLE_STATUSES = new Set(['lobby', 'playing', 'paused'])
 
 function makeToken() {
   return randomUUID().replace(/-/g, '') + randomUUID().replace(/-/g, '')
@@ -78,10 +85,13 @@ function normalizeGame(row: Record<string, unknown>) {
       row.pending_action && typeof row.pending_action === 'object'
         ? row.pending_action
         : {},
-    settings:
-      row.settings && typeof row.settings === 'object'
-        ? row.settings
-        : { startingMoney: 1500, salary: 200 },
+    settings: {
+      startingMoney: 1500,
+      salary: 200,
+      speed: 'normal' as const,
+      tokenSize: 'normal' as const,
+      ...(row.settings && typeof row.settings === 'object' ? row.settings : {}),
+    },
   } as Game
 }
 
@@ -288,14 +298,16 @@ async function persistState(
   }
 
   if (state.newEvents.length > 0) {
+    const now = Date.now()
     const { error: eventError } = await supabase.from('monopoly_events').insert(
-      state.newEvents.map((event) => ({
+      state.newEvents.map((event, i) => ({
         organization_id: organizationId,
         game_id: state.game.id,
         event_type: event.event_type,
         actor_player_id: event.actor_player_id,
         message: event.message.slice(0, 240),
         payload: event.payload ?? {},
+        created_at: new Date(now + i).toISOString(),
       })),
     )
     if (eventError) throw new Error(`persist_failed: ${eventError.message}`)
@@ -523,49 +535,167 @@ export async function assignControllerAction(
   playerId: string,
 ) {
   const ctx = await requireHost(slug)
-  const bundle = await fetchBundle(ctx.actor.organizationId, gameId)
-  if (!bundle || bundle.game.status !== 'lobby') {
-    return { ok: false as const, error: 'lobby_only' }
+  const orgId = ctx.actor.organizationId
+  const bundle = await fetchBundle(orgId, gameId)
+  if (!bundle || bundle.game.status === 'finished') {
+    return { ok: false as const, error: 'game_finished' }
   }
+  const inPlay = bundle.game.status !== 'lobby'
+  // 再接続時は CPU 化された席にも割り当て可能（割当と同時にスマホ操作へ戻す）
   const player = bundle.players.find(
     (item) =>
       item.id === playerId &&
-      item.controller_type === 'smartphone',
+      (item.controller_type === 'smartphone' || item.controller_type === 'cpu'),
   )
   const controller = bundle.controllers.find((item) => item.id === controllerId)
   if (!player || !controller || controller.status !== 'waiting') {
     return { ok: false as const, error: 'invalid_assignment' }
   }
+  const wasCpu = player.controller_type === 'cpu'
+  const supabase = getAdminSupabase()
+  // この席に割り当て済みの旧コントローラーを解放する。
+  // ロビーでは再利用できるよう waiting、対局中は古い端末なので disconnected。
+  await supabase
+    .from('monopoly_controllers')
+    .update({
+      assigned_player_id: null,
+      status: inPlay ? 'disconnected' : 'waiting',
+    })
+    .eq('organization_id', orgId)
+    .eq('game_id', gameId)
+    .eq('assigned_player_id', playerId)
+  await supabase
+    .from('monopoly_controllers')
+    .update({ assigned_player_id: playerId, status: 'assigned' })
+    .eq('organization_id', orgId)
+    .eq('game_id', gameId)
+    .eq('id', controllerId)
+
+  if (inPlay) {
+    // 対局中はプレイヤー状態をバージョンロック経由で更新する
+    await mutateGame(orgId, gameId, (state) => {
+      const target = state.players.find((item) => item.id === playerId)
+      if (!target) throw new Error('player_not_found')
+      target.connected = true
+      if (target.controller_type === 'cpu') target.controller_type = 'smartphone'
+      state.newEvents.push({
+        event_type: 'assign',
+        actor_player_id: playerId,
+        message: wasCpu
+          ? `${target.display_name} がスマートフォンで復帰しました（CPU解除）`
+          : `${controller.label} を ${target.display_name} に割り当てました`,
+      })
+    })
+  } else {
+    await supabase
+      .from('monopoly_players')
+      .update({ connected: true })
+      .eq('organization_id', orgId)
+      .eq('game_id', gameId)
+      .eq('id', playerId)
+    await supabase.from('monopoly_events').insert({
+      organization_id: orgId,
+      game_id: gameId,
+      event_type: 'assign',
+      actor_player_id: playerId,
+      message: `${controller.label} を ${player.display_name} に割り当てました`,
+      payload: { controllerId },
+    })
+  }
+  revalidatePath(`/org/${slug}/apps/${APP_ID}`)
+  return { ok: true as const }
+}
+
+// スマートフォン側からの接続解除。席を空け、ホストが別端末を割り当て可能にする。
+export async function leaveControllerAction(
+  slug: string,
+  rawCode: string,
+  controllerId: string,
+  controllerToken: string,
+  gameId?: string,
+) {
+  const validated = await validateController(
+    slug,
+    rawCode,
+    controllerId,
+    controllerToken,
+    gameId,
+  )
+  if (!validated) return { ok: false as const, error: 'controller_not_found' }
+  const orgId = validated.game.organization_id
+  const playerId = validated.controller.assigned_player_id
   const supabase = getAdminSupabase()
   await supabase
     .from('monopoly_controllers')
-    .update({ assigned_player_id: null, status: 'waiting' })
-    .eq('organization_id', ctx.actor.organizationId)
+    .update({ assigned_player_id: null, status: 'disconnected' })
+    .eq('organization_id', orgId)
+    .eq('id', controllerId)
+  if (playerId) {
+    await supabase
+      .from('monopoly_players')
+      .update({ connected: false })
+      .eq('organization_id', orgId)
+      .eq('game_id', validated.game.id)
+      .eq('id', playerId)
+    await supabase.from('monopoly_events').insert({
+      organization_id: orgId,
+      game_id: validated.game.id,
+      event_type: 'system',
+      actor_player_id: playerId,
+      message: `${validated.controller.label} が接続を解除しました`,
+      payload: { controllerId },
+    })
+  }
+  return { ok: true as const }
+}
+
+// ホストがオフライン/離脱した席を CPU に切り替える（案B）。
+// その席のターン中なら CPU 操作で即座に進める。
+export async function convertPlayerToCpuAction(
+  slug: string,
+  gameId: string,
+  playerId: string,
+) {
+  const ctx = await requireHost(slug)
+  const orgId = ctx.actor.organizationId
+  const supabase = getAdminSupabase()
+  // この席のコントローラーを解放する
+  await supabase
+    .from('monopoly_controllers')
+    .update({ assigned_player_id: null, status: 'disconnected' })
+    .eq('organization_id', orgId)
     .eq('game_id', gameId)
     .eq('assigned_player_id', playerId)
-  await Promise.all([
-    supabase
-      .from('monopoly_controllers')
-      .update({ assigned_player_id: playerId, status: 'assigned' })
-      .eq('organization_id', ctx.actor.organizationId)
-      .eq('game_id', gameId)
-      .eq('id', controllerId),
-    supabase
-      .from('monopoly_players')
-      .update({ connected: true })
-      .eq('organization_id', ctx.actor.organizationId)
-      .eq('game_id', gameId)
-      .eq('id', playerId),
-  ])
-  await supabase.from('monopoly_events').insert({
-    organization_id: ctx.actor.organizationId,
-    game_id: gameId,
-    event_type: 'assign',
-    actor_player_id: playerId,
-    message: `${controller.label} を ${player.display_name} に割り当てました`,
-    payload: { controllerId },
-  })
-  return { ok: true as const }
+  try {
+    const updated = await mutateGame(orgId, gameId, (state) => {
+      const player = state.players.find((item) => item.id === playerId)
+      if (!player) throw new Error('player_not_found')
+      if (player.controller_type !== 'smartphone') {
+        throw new Error('not_smartphone')
+      }
+      player.controller_type = 'cpu'
+      player.connected = true
+      state.newEvents.push({
+        event_type: 'system',
+        actor_player_id: playerId,
+        message: `${player.display_name} をCPUに切り替えました`,
+      })
+      if (
+        state.game.status === 'playing' &&
+        state.game.current_player_id === playerId
+      ) {
+        runCpuTurns(state)
+      }
+    })
+    return updated
+      ? { ok: true as const, bundle: updated }
+      : { ok: false as const, error: 'game_not_found' }
+  } catch (error) {
+    return {
+      ok: false as const,
+      error: error instanceof Error ? error.message : 'action_failed',
+    }
+  }
 }
 
 export async function startGameAction(slug: string, gameId: string) {
@@ -614,6 +744,68 @@ export async function setPauseAction(
     .eq('organization_id', ctx.actor.organizationId)
     .eq('id', gameId)
     .in('status', ['playing', 'paused'])
+  return error
+    ? { ok: false as const, error: error.message }
+    : { ok: true as const }
+}
+
+const SPEED_VALUES: GameSpeed[] = ['very_slow', 'slow', 'normal', 'fast', 'very_fast']
+
+export async function setGameSpeedAction(
+  slug: string,
+  gameId: string,
+  speed: string,
+) {
+  const ctx = await requireHost(slug)
+  if (!SPEED_VALUES.includes(speed as GameSpeed)) {
+    return { ok: false as const, error: 'invalid_speed' }
+  }
+  const supabase = getAdminSupabase()
+  const { data: row } = await supabase
+    .from('monopoly_games')
+    .select('settings')
+    .eq('organization_id', ctx.actor.organizationId)
+    .eq('id', gameId)
+    .maybeSingle()
+  if (!row) return { ok: false as const, error: 'game_not_found' }
+  const current =
+    row.settings && typeof row.settings === 'object' ? row.settings : {}
+  const { error } = await supabase
+    .from('monopoly_games')
+    .update({ settings: { startingMoney: 1500, salary: 200, ...current, speed } })
+    .eq('organization_id', ctx.actor.organizationId)
+    .eq('id', gameId)
+  return error
+    ? { ok: false as const, error: error.message }
+    : { ok: true as const }
+}
+
+const TOKEN_SIZE_VALUES: TokenSize[] = ['small', 'normal', 'large', 'xlarge']
+
+export async function setGameTokenSizeAction(
+  slug: string,
+  gameId: string,
+  tokenSize: string,
+) {
+  const ctx = await requireHost(slug)
+  if (!TOKEN_SIZE_VALUES.includes(tokenSize as TokenSize)) {
+    return { ok: false as const, error: 'invalid_token_size' }
+  }
+  const supabase = getAdminSupabase()
+  const { data: row } = await supabase
+    .from('monopoly_games')
+    .select('settings')
+    .eq('organization_id', ctx.actor.organizationId)
+    .eq('id', gameId)
+    .maybeSingle()
+  if (!row) return { ok: false as const, error: 'game_not_found' }
+  const current =
+    row.settings && typeof row.settings === 'object' ? row.settings : {}
+  const { error } = await supabase
+    .from('monopoly_games')
+    .update({ settings: { startingMoney: 1500, salary: 200, ...current, tokenSize } })
+    .eq('organization_id', ctx.actor.organizationId)
+    .eq('id', gameId)
   return error
     ? { ok: false as const, error: error.message }
     : { ok: true as const }
@@ -674,14 +866,53 @@ export async function hostCorrectionAction(
     : { ok: false as const, error: 'game_not_found' }
 }
 
-export async function advanceCpuAction(slug: string, gameId: string) {
+export async function advanceCpuAction(
+  slug: string,
+  gameId: string,
+  expectedPlayerId: string,
+) {
   const ctx = await requireHost(slug)
   const updated = await mutateGame(ctx.actor.organizationId, gameId, (state) => {
+    if (
+      state.game.status !== 'playing' ||
+      state.game.phase !== 'await_roll' ||
+      state.game.current_player_id !== expectedPlayerId
+    ) {
+      throw new Error('cpu_turn_changed')
+    }
+    const player = state.players.find((item) => item.id === expectedPlayerId)
+    if (!player || player.controller_type !== 'cpu') {
+      throw new Error('not_cpu_turn')
+    }
     runCpuTurns(state)
   })
   return updated
     ? { ok: true as const, bundle: updated }
     : { ok: false as const, error: 'game_not_found' }
+}
+
+export async function completeTurnPresentationAction(
+  slug: string,
+  gameId: string,
+  expectedVersion: number,
+) {
+  const ctx = await requireHost(slug)
+  try {
+    const updated = await mutateGame(ctx.actor.organizationId, gameId, (state) => {
+      if (state.game.version !== expectedVersion) {
+        throw new Error('presentation_changed')
+      }
+      completeTurnPresentationEngine(state)
+    })
+    return updated
+      ? { ok: true as const, bundle: updated }
+      : { ok: false as const, error: 'game_not_found' }
+  } catch (error) {
+    return {
+      ok: false as const,
+      error: error instanceof Error ? error.message : 'action_failed',
+    }
+  }
 }
 
 export async function getJoinPreviewAction(
@@ -696,11 +927,11 @@ export async function getJoinPreviewAction(
     !joinSecret ||
     !TOKEN_PATTERN.test(joinSecret) ||
     game.join_secret !== joinSecret.toLowerCase() ||
-    game.status !== 'lobby'
+    !JOINABLE_STATUSES.has(game.status)
   ) {
     return {
       ok: false as const,
-      error: 'この参加用QRコードは無効か、ゲームが開始済みです',
+      error: 'この参加用QRコードは無効か、ゲームが終了しています',
     }
   }
   return {
@@ -726,7 +957,7 @@ export async function connectControllerAction(
     !game ||
     !joinSecret ||
     game.join_secret !== joinSecret.toLowerCase() ||
-    game.status !== 'lobby'
+    !JOINABLE_STATUSES.has(game.status)
   ) {
     return { ok: false as const, error: 'QRコードを読み直してください' }
   }
@@ -870,6 +1101,10 @@ export async function controllerActionAction(
       (state) => {
         if (state.game.status === 'paused') throw new Error('game_paused')
         if (action === 'roll') rollTurnEngine(state, playerId)
+        else if (action === 'advance_card') {
+          advanceCardEngine(state, playerId)
+          runCpuTurns(state)
+        }
         else if (action === 'buy') purchaseEngine(state, playerId, true)
         else if (action === 'auction_start') purchaseEngine(state, playerId, false)
         else if (action === 'auction_bid') auctionEngine(state, playerId, 'bid', Number(payload.amount))
@@ -903,6 +1138,9 @@ export async function controllerActionAction(
           })
         } else if (action === 'trade_accept') respondTradeEngine(state, playerId, true)
         else if (action === 'trade_reject') respondTradeEngine(state, playerId, false)
+        else if (action === 'advance_cpu') {
+          throw new Error('cpu_managed_by_host')
+        }
         else throw new Error('unknown_action')
       },
     )
@@ -919,7 +1157,7 @@ export async function hostPlayerActionAction(
   slug: string,
   gameId: string,
   playerId: string,
-  action: 'roll' | 'buy' | 'auction_start',
+  action: 'roll' | 'advance_card' | 'buy' | 'auction_start',
 ) {
   const ctx = await requireHost(slug)
   try {
@@ -927,6 +1165,10 @@ export async function hostPlayerActionAction(
       const player = state.players.find((item) => item.id === playerId)
       if (!player || player.controller_type !== 'pc') throw new Error('pc_player_only')
       if (action === 'roll') rollTurnEngine(state, playerId)
+      else if (action === 'advance_card') {
+        advanceCardEngine(state, playerId)
+        runCpuTurns(state)
+      }
       else purchaseEngine(state, playerId, action === 'buy')
     })
     return bundle
