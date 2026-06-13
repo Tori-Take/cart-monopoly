@@ -2,6 +2,7 @@ export type GameStatus = 'lobby' | 'playing' | 'paused' | 'finished'
 export type GamePhase =
   | 'lobby'
   | 'await_roll'
+  | 'await_card_move'
   | 'await_purchase'
   | 'auction'
   | 'manage_debt'
@@ -44,6 +45,17 @@ export interface PurchasePending {
   rolledDoubles: boolean
 }
 
+export interface CardMovePending {
+  kind: 'card_move'
+  playerId: string
+  cardDeck: 'chance' | 'chest'
+  cardId: string
+  destination: number
+  collectGo: boolean
+  rentMultiplier: number
+  rolledDoubles: boolean
+}
+
 export interface AuctionPending {
   kind: 'auction'
   spaceIndex: number
@@ -77,6 +89,7 @@ export interface TradePending {
 
 export type PendingAction =
   | PurchasePending
+  | CardMovePending
   | AuctionPending
   | DebtPending
   | TradePending
