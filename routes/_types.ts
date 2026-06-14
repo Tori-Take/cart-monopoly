@@ -57,6 +57,7 @@ export interface CardMovePending {
   collectGo: boolean
   rentMultiplier: number
   rolledDoubles: boolean
+  rentDiceTotal?: number
 }
 
 export interface AuctionPending {
@@ -68,6 +69,8 @@ export interface AuctionPending {
   passedPlayerIds: string[]
   turnPlayerId: string
   rolledDoubles: boolean
+  source?: 'landing' | 'bankruptcy'
+  remainingSpaceIndexes?: number[]
 }
 
 export interface DebtPending {
@@ -77,6 +80,9 @@ export interface DebtPending {
   amount: number
   reason: string
   rolledDoubles: boolean
+  resume:
+    | { kind: 'end_turn' }
+    | { kind: 'jail_move'; diceTotal: number }
 }
 
 export interface TradePending {
@@ -127,6 +133,8 @@ export interface Game {
   pending_action: PendingAction
   settings: GameSettings
   version: number
+  last_mutation_id: string | null
+  mutation_payload: Record<string, unknown>
   created_by: string | null
   started_at: string | null
   finished_at: string | null
@@ -249,6 +257,15 @@ export interface GameBundle {
   controllers: Controller[]
   properties: PropertyState[]
   events: GameEvent[]
+}
+
+export interface SavedGameSummary {
+  id: string
+  title: string
+  status: GameStatus
+  join_code: string
+  player_count: number
+  updated_at: string
 }
 
 export interface PublicGameState {

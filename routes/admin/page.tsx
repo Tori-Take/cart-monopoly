@@ -1,10 +1,8 @@
 import { requireApp } from '@/sdk'
 import { notFound } from 'next/navigation'
-import type { Game } from '../_types'
-import {
-  deleteGameFormAction,
-  listAdminGamesAction,
-} from '../server/actions'
+import type { SavedGameSummary } from '../_types'
+import { listAdminGamesAction } from '../server/actions'
+import { DeleteGameButton } from './DeleteGameButton'
 
 function date(value: string) {
   return new Intl.DateTimeFormat('ja-JP', {
@@ -43,7 +41,7 @@ export default async function AdminPage({
         <section className="adminCard">読み込みに失敗しました: {result.error}</section>
       ) : (
         <section className="gameList">
-          {result.games.map((game: Game & { player_count: number }) => (
+          {result.games.map((game: SavedGameSummary) => (
             <article key={game.id} className="gameRow">
               <div>
                 <span>{game.status}</span>
@@ -53,9 +51,16 @@ export default async function AdminPage({
                   {date(game.updated_at)}
                 </small>
               </div>
-              <form action={deleteGameFormAction.bind(null, slug, game.id)}>
-                <button type="submit">削除</button>
-              </form>
+              <div className="rowActions">
+                <a href={`/org/${slug}/apps/monopoly?game=${game.id}`}>
+                  開く
+                </a>
+                <DeleteGameButton
+                  slug={slug}
+                  gameId={game.id}
+                  title={game.title}
+                />
+              </div>
             </article>
           ))}
           {result.games.length === 0 ? (
@@ -113,6 +118,18 @@ export default async function AdminPage({
         .gameRow span { color: #efbf64; font-size: 10px; font-weight: 900; text-transform: uppercase; }
         .gameRow strong { font-family: Georgia, serif; font-size: 23px; }
         .gameRow small { color: #a99b9f; }
+        .rowActions { display: flex; gap: 8px; }
+        .rowActions a {
+          display: inline-grid;
+          min-height: 42px;
+          place-items: center;
+          border-radius: 8px;
+          padding: 0 14px;
+          background: #f7f0dd;
+          color: #181413;
+          text-decoration: none;
+          font-weight: 900;
+        }
         button {
           min-height: 42px;
           border: 0;
@@ -127,7 +144,7 @@ export default async function AdminPage({
         @media (max-width: 640px) {
           .adminShell { padding: 18px; }
           header, .gameRow { grid-template-columns: 1fr; display: grid; align-items: start; }
-          form, button { width: 100%; }
+          .rowActions, .rowActions a, button { width: 100%; }
         }
       `}</style>
     </main>

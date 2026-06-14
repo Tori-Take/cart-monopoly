@@ -1,6 +1,7 @@
 import { randomUUID } from 'crypto'
 import type {
   AuctionPending,
+  DebtPending,
   Game,
   GameEvent,
   PendingAction,
@@ -12,6 +13,8 @@ import {
   BOARD,
   CHANCE_CARDS,
   CHEST_CARDS,
+  HOTEL_SUPPLY,
+  HOUSE_SUPPLY,
   getCard,
   getSpace,
 } from '../gameData'
@@ -20,6 +23,11 @@ export interface MutableGameState {
   game: Game
   players: Player[]
   properties: PropertyState[]
+  controllerMutations?: Array<{
+    id: string
+    status: 'waiting' | 'assigned' | 'disconnected'
+    assigned_player_id: string | null
+  }>
   newEvents: Array<{
     event_type: GameEvent['event_type']
     actor_player_id: string | null
@@ -89,6 +97,116 @@ function groupProperties(state: MutableGameState, group: string) {
     .filter((property): property is PropertyState => Boolean(property))
 }
 
+function housesInUse(state: MutableGameState) {
+  return state.properties.reduce(
+    (total, property) =>
+      total +
+      (property.buildings >= 1 && property.buildings <= 4
+        ? property.buildings
+        : 0),
+    0,
+  )
+}
+
+function hotelsInUse(state: MutableGameState) {
+  return state.properties.filter((property) => property.buildings === 5).length
+}
+
+function canSellBuilding(
+  state: MutableGameState,
+  property: PropertyState,
+) {
+  if (property.buildings <= 0) return false
+  const space = getSpace(property.space_index)
+  if (space.type !== 'street' || !space.group) return false
+  const group = groupProperties(state, space.group)
+  const maximum = Math.max(...group.map((item) => item.buildings))
+  if (property.buildings !== maximum) return false
+  if (property.buildings < 5) return true
+  const availableHouses = HOUSE_SUPPLY - housesInUse(state)
+  return (
+    availableHouses >= 4 ||
+    group.every((groupProperty) => groupProperty.buildings === 5)
+  )
+}
+
+function sellBuilding(
+  state: MutableGameState,
+  player: Player,
+  property: PropertyState,
+) {
+  const space = getSpace(property.space_index)
+  if (
+    space.type !== 'street' ||
+    !space.group ||
+    !canSellBuilding(state, property)
+  ) {
+    throw new Error(
+      property.buildings === 5 ? 'house_shortage' : 'cannot_sell',
+    )
+  }
+  const refundPerHouse = Math.floor((space.houseCost ?? 0) / 2)
+  const group = groupProperties(state, space.group)
+  const availableHouses = HOUSE_SUPPLY - housesInUse(state)
+
+  if (
+    property.buildings === 5 &&
+    availableHouses < 4 &&
+    group.every((groupProperty) => groupProperty.buildings === 5)
+  ) {
+    let refund = 0
+    for (const groupProperty of group) {
+      const groupSpace = getSpace(groupProperty.space_index)
+      refund += 5 * Math.floor((groupSpace.houseCost ?? 0) / 2)
+      groupProperty.buildings = 0
+    }
+    player.money += refund
+    emit(
+      state,
+      'build',
+      `${player.display_name} が${space.group}グループのホテルを一括売却しました`,
+      player.id,
+      { group: space.group, refund },
+    )
+    return
+  }
+
+  property.buildings -= 1
+  player.money += refundPerHouse
+  emit(
+    state,
+    'build',
+    `${player.display_name} が${space.name}の建物を売却しました`,
+    player.id,
+  )
+}
+
+function canTransferProperty(
+  state: MutableGameState,
+  property: PropertyState,
+) {
+  if (property.buildings > 0) return false
+  const space = getSpace(property.space_index)
+  return (
+    space.type !== 'street' ||
+    !space.group ||
+    groupProperties(state, space.group).every(
+      (groupProperty) => groupProperty.buildings === 0,
+    )
+  )
+}
+
+function mortgageTransferInterest(
+  state: MutableGameState,
+  spaceIndexes: number[],
+) {
+  return spaceIndexes.reduce((total, index) => {
+    const property = propertyAt(state, index)
+    if (!property?.mortgaged) return total
+    return total + Math.ceil((getSpace(index).mortgage ?? 0) / 10)
+  }, 0)
+}
+
 function nextPlayer(state: MutableGameState, fromPlayerId: string) {
   const players = activePlayers(state)
   if (players.length <= 1) return players[0] ?? null
@@ -119,6 +237,7 @@ function announceTurn(
   state: MutableGameState,
   player: Player,
   message: string,
+  resetDoubles = true,
 ) {
   state.game.current_player_id = player.id
   state.game.phase = 'presenting'
@@ -132,7 +251,7 @@ function announceTurn(
   }
   state.game.dice_1 = null
   state.game.dice_2 = null
-  state.game.doubles_count = 0
+  if (resetDoubles) state.game.doubles_count = 0
   emit(state, 'turn', message, player.id)
 }
 
@@ -241,20 +360,25 @@ function liquidateCpu(state: MutableGameState, player: Player) {
 
   while (player.money < 0) {
     const withBuildings = owned
-      .filter((property) => property.buildings > 0)
+      .filter((property) => canSellBuilding(state, property))
       .sort((a, b) => b.buildings - a.buildings)[0]
     if (!withBuildings) break
-    const space = getSpace(withBuildings.space_index)
-    withBuildings.buildings -= 1
-    player.money += Math.floor((space.houseCost ?? 0) / 2)
-    emit(state, 'build', `${player.display_name} が建物を売却しました`, player.id, {
-      spaceIndex: withBuildings.space_index,
-    })
+    sellBuilding(state, player, withBuildings)
   }
 
   while (player.money < 0) {
     const mortgageable = owned.find(
-      (property) => !property.mortgaged && property.buildings === 0,
+      (property) => {
+        if (property.mortgaged || property.buildings > 0) return false
+        const space = getSpace(property.space_index)
+        return (
+          space.type !== 'street' ||
+          !space.group ||
+          groupProperties(state, space.group).every(
+            (groupProperty) => groupProperty.buildings === 0,
+          )
+        )
+      },
     )
     if (!mortgageable) break
     const space = getSpace(mortgageable.space_index)
@@ -335,6 +459,7 @@ function charge(
   creditor: Player | null,
   reason: string,
   rolledDoubles: boolean,
+  resume: DebtPending['resume'] = { kind: 'end_turn' },
 ) {
   if (amount <= 0) return
   payer.money -= amount
@@ -364,7 +489,27 @@ function charge(
     amount,
     reason,
     rolledDoubles,
+    resume,
   }
+}
+
+function settleCardTransfer(
+  state: MutableGameState,
+  payer: Player,
+  creditor: Player,
+  amount: number,
+) {
+  if (amount <= 0 || payer.bankrupt || creditor.bankrupt) return 0
+  const creditorMoneyBefore = creditor.money
+  payer.money -= amount
+  creditor.money += amount
+  if (payer.money < 0) {
+    liquidateCpu(state, payer)
+    if (payer.money < 0) {
+      declareBankrupt(state, payer, creditor.id)
+    }
+  }
+  return Math.max(0, creditor.money - creditorMoneyBefore)
 }
 
 function movePlayer(
@@ -403,6 +548,7 @@ function pauseForCard(
   destination = player.position,
   collectGo = false,
   rentMultiplier = 1,
+  rentDiceTotal?: number,
 ) {
   state.game.phase = 'await_card_move'
   state.game.pending_action = {
@@ -415,6 +561,7 @@ function pauseForCard(
     collectGo,
     rentMultiplier,
     rolledDoubles,
+    ...(rentDiceTotal === undefined ? {} : { rentDiceTotal }),
   }
 }
 
@@ -444,40 +591,31 @@ function drawCard(
   if (effect.type === 'money') {
     if (effect.perPlayer) {
       const others = activePlayers(state).filter((item) => item.id !== player.id)
+      const per = Math.abs(effect.amount)
+      let transferred = 0
       if (effect.amount > 0) {
         for (const other of others) {
-          other.money -= effect.amount
-          player.money += effect.amount
+          transferred += settleCardTransfer(state, other, player, per)
         }
       } else {
         for (const other of others) {
-          player.money += effect.amount
-          other.money -= effect.amount
+          if (player.bankrupt) break
+          transferred += settleCardTransfer(state, player, other, per)
         }
       }
-      const per = Math.abs(effect.amount)
-      const total = per * others.length
       if (others.length > 0) {
         emit(
           state,
           'rent',
           effect.amount > 0
-            ? `${player.display_name} が${card.title}で各プレイヤーから$${per}ずつ（合計$${total}）受け取りました`
-            : `${player.display_name} が${card.title}で各プレイヤーへ$${per}ずつ（合計$${total}）支払いました`,
+            ? `${player.display_name} が${card.title}で各プレイヤーから合計$${transferred}を受け取りました`
+            : `${player.display_name} が${card.title}で各プレイヤーへ合計$${transferred}を支払いました`,
           player.id,
-          { amount: effect.amount > 0 ? total : -total },
+          { amount: effect.amount > 0 ? transferred : -transferred },
         )
       }
-      if (player.money < 0 && player.controller_type !== 'cpu') {
-        state.game.phase = 'manage_debt'
-        state.game.pending_action = {
-          kind: 'debt',
-          playerId: player.id,
-          creditorPlayerId: null,
-          amount: Math.abs(effect.amount) * others.length,
-          reason: card.title,
-          rolledDoubles,
-        }
+      if (player.bankrupt) {
+        endTurn(state, player, false)
         return
       }
     } else if (effect.amount >= 0) {
@@ -511,6 +649,7 @@ function drawCard(
     let destination: number
     let collectGo: boolean
     let rentMultiplier = 1
+    let rentDiceTotal: number | undefined
     if (effect.type === 'move') {
       destination = effect.position
       collectGo = effect.collectGo
@@ -518,6 +657,20 @@ function drawCard(
       destination = nearestSpace(player.position, effect.target)
       collectGo = true
       rentMultiplier = effect.rentMultiplier
+      if (effect.target === 'utility') {
+        const dice1 = rollDie()
+        const dice2 = rollDie()
+        rentDiceTotal = dice1 + dice2
+        state.game.dice_1 = dice1
+        state.game.dice_2 = dice2
+        emit(
+          state,
+          'dice',
+          `${player.display_name} が公共会社の賃料判定で ${dice1} + ${dice2} = ${rentDiceTotal} を出しました`,
+          player.id,
+          { dice1, dice2, cardId },
+        )
+      }
     } else {
       destination = (player.position - effect.spaces + 40) % 40
       collectGo = false
@@ -527,7 +680,13 @@ function drawCard(
     // よう一旦停止し、駒移動アニメと次イベントを段階表示する
     if (player.controller_type === 'cpu') {
       movePlayer(state, player, destination, collectGo)
-      applyLanding(state, player, rolledDoubles, rentMultiplier)
+      applyLanding(
+        state,
+        player,
+        rolledDoubles,
+        rentMultiplier,
+        rentDiceTotal,
+      )
     } else {
       pauseForCard(
         state,
@@ -539,6 +698,7 @@ function drawCard(
         destination,
         collectGo,
         rentMultiplier,
+        rentDiceTotal,
       )
     }
     return
@@ -578,6 +738,8 @@ function startAuction(
   spaceIndex: number,
   turnPlayer: Player,
   rolledDoubles: boolean,
+  source: AuctionPending['source'] = 'landing',
+  remainingSpaceIndexes: number[] = [],
 ) {
   const players = activePlayers(state)
   state.game.phase = 'auction'
@@ -590,6 +752,8 @@ function startAuction(
     passedPlayerIds: [],
     turnPlayerId: turnPlayer.id,
     rolledDoubles,
+    source,
+    remainingSpaceIndexes,
   }
   emit(state, 'auction', `${getSpace(spaceIndex).name}の競売を開始します`, turnPlayer.id)
   runCpuAuction(state)
@@ -617,6 +781,21 @@ function settleAuctionIfReady(state: MutableGameState) {
     emit(state, 'auction', `${winner.display_name} が${getSpace(auction.spaceIndex).name}を$${auction.highestBid}で落札しました`, winner.id)
   } else {
     emit(state, 'auction', `${getSpace(auction.spaceIndex).name}は落札されませんでした`)
+  }
+
+  const remainingAuctions = auction.remainingSpaceIndexes ?? []
+  if (auction.source === 'bankruptcy' && remainingAuctions.length > 0) {
+    const [nextSpaceIndex, ...rest] = remainingAuctions
+    if (!turnPlayer) throw new Error('player_not_found')
+    startAuction(
+      state,
+      nextSpaceIndex,
+      turnPlayer,
+      false,
+      'bankruptcy',
+      rest,
+    )
+    return true
   }
 
   state.game.pending_action = {}
@@ -692,6 +871,7 @@ function applyLanding(
   player: Player,
   rolledDoubles: boolean,
   rentMultiplier = 1,
+  rentDiceTotal?: number,
 ) {
   const space = getSpace(player.position)
 
@@ -749,7 +929,8 @@ function applyLanding(
   }
 
   const owner = state.players.find((item) => item.id === property.owner_player_id) ?? null
-  const diceTotal = (state.game.dice_1 ?? 0) + (state.game.dice_2 ?? 0)
+  const diceTotal =
+    rentDiceTotal ?? (state.game.dice_1 ?? 0) + (state.game.dice_2 ?? 0)
   const rent = calculateRent(state, property, diceTotal, rentMultiplier)
   if (owner && !owner.bankrupt && rent > 0) {
     charge(state, player, rent, owner, `${space.name}の賃料`, rolledDoubles)
@@ -757,6 +938,43 @@ function applyLanding(
   if (state.game.phase !== 'manage_debt' && !player.bankrupt) {
     endTurn(state, player, rolledDoubles)
   }
+}
+
+function resumeAfterDebt(
+  state: MutableGameState,
+  player: Player,
+  debt: DebtPending,
+) {
+  state.game.pending_action = {}
+  if (debt.resume?.kind === 'jail_move') {
+    movePlayer(
+      state,
+      player,
+      (player.position + debt.resume.diceTotal) % 40,
+      true,
+    )
+    applyLanding(state, player, false)
+    return
+  }
+  endTurn(state, player, debt.rolledDoubles)
+}
+
+export function resolveDebtAfterCorrectionEngine(
+  state: MutableGameState,
+  playerId: string,
+) {
+  if (
+    state.game.phase !== 'manage_debt' ||
+    state.game.pending_action.kind !== 'debt' ||
+    state.game.pending_action.playerId !== playerId
+  ) {
+    return false
+  }
+  const player = state.players.find((item) => item.id === playerId)
+  if (!player || player.money < 0 || player.bankrupt) return false
+  const debt = state.game.pending_action
+  resumeAfterDebt(state, player, debt)
+  return true
 }
 
 export function startGameEngine(state: MutableGameState) {
@@ -792,7 +1010,10 @@ export function completeTurnPresentationEngine(state: MutableGameState) {
   if (!nextPlayer || nextPlayer.bankrupt) throw new Error('player_not_found')
   if (transition.stage === 'handoff') {
     if (transition.incrementTurn) state.game.turn_number += 1
-    announceTurn(state, nextPlayer, transition.message)
+    const sameTurn =
+      !transition.incrementTurn &&
+      state.game.current_player_id === nextPlayer.id
+    announceTurn(state, nextPlayer, transition.message, !sameTurn)
     return
   }
   state.game.phase = 'await_roll'
@@ -834,7 +1055,15 @@ export function rollTurnEngine(state: MutableGameState, playerId: string) {
       return
     }
     if (player.jail_turns >= 2) {
-      charge(state, player, 50, null, '留置所の釈放料', false)
+      charge(
+        state,
+        player,
+        50,
+        null,
+        '留置所の釈放料',
+        false,
+        { kind: 'jail_move', diceTotal: total },
+      )
       player.in_jail = false
       player.jail_turns = 0
       if (!player.bankrupt && state.game.pending_action.kind !== 'debt') {
@@ -899,11 +1128,24 @@ export function advanceCardEngine(state: MutableGameState, playerId: string) {
   const player = state.players.find((item) => item.id === playerId)
   if (!player) throw new Error('player_not_found')
 
-  const { resolution, destination, collectGo, rentMultiplier, rolledDoubles } = pending
+  const {
+    resolution,
+    destination,
+    collectGo,
+    rentMultiplier,
+    rentDiceTotal,
+    rolledDoubles,
+  } = pending
   state.game.pending_action = {}
   if (resolution === 'move') {
     movePlayer(state, player, destination, collectGo)
-    applyLanding(state, player, rolledDoubles, rentMultiplier)
+    applyLanding(
+      state,
+      player,
+      rolledDoubles,
+      rentMultiplier,
+      rentDiceTotal,
+    )
   } else if (resolution === 'jail') {
     const card = getCard(pending.cardDeck, pending.cardId)
     sendToJail(state, player, card?.title ?? 'Go To Jail')
@@ -933,8 +1175,10 @@ export function auctionEngine(
     auction.passedPlayerIds.push(playerId)
     emit(state, 'auction', `${player.display_name} は競売を降りました`, player.id)
   } else {
-    const bid = Math.floor(amount / 10) * 10
-    if (bid < auction.highestBid + 10 || bid > player.money) throw new Error('invalid_bid')
+    const bid = Math.floor(amount)
+    if (bid < auction.highestBid + 1 || bid > player.money) {
+      throw new Error('invalid_bid')
+    }
     auction.highestBid = bid
     auction.highestBidderId = player.id
     emit(state, 'auction', `${player.display_name} が$${bid}を入札しました`, player.id)
@@ -953,6 +1197,21 @@ export function managePropertyEngine(
   const player = state.players.find((item) => item.id === playerId)
   const property = propertyAt(state, spaceIndex)
   const space = getSpace(spaceIndex)
+  if (state.game.status !== 'playing') throw new Error('game_not_playing')
+  if (!player || player.bankrupt) throw new Error('player_not_found')
+  if (
+    state.game.phase === 'manage_debt' &&
+    (state.game.pending_action.kind !== 'debt' ||
+      state.game.pending_action.playerId !== playerId)
+  ) {
+    throw new Error('debt_in_progress')
+  }
+  if (
+    state.game.phase === 'manage_debt' &&
+    (action === 'build' || action === 'unmortgage')
+  ) {
+    throw new Error('debt_reduction_only')
+  }
   if (!player || !property || property.owner_player_id !== player.id) {
     throw new Error('property_not_owned')
   }
@@ -991,6 +1250,12 @@ export function managePropertyEngine(
     if (group.some((item) => item.mortgaged)) throw new Error('cannot_build')
     const minimum = Math.min(...group.map((item) => item.buildings))
     if (property.buildings !== minimum) throw new Error('build_evenly')
+    if (property.buildings < 4 && housesInUse(state) >= HOUSE_SUPPLY) {
+      throw new Error('house_shortage')
+    }
+    if (property.buildings === 4 && hotelsInUse(state) >= HOTEL_SUPPLY) {
+      throw new Error('hotel_shortage')
+    }
     const cost = space.houseCost ?? 0
     if (player.money < cost) throw new Error('insufficient_funds')
     player.money -= cost
@@ -999,15 +1264,12 @@ export function managePropertyEngine(
   }
 
   if (action === 'sell') {
-    if (space.type !== 'street' || !space.group || property.buildings <= 0) {
-      throw new Error('cannot_sell')
+    if (!canSellBuilding(state, property)) {
+      if (property.buildings <= 0) throw new Error('cannot_sell')
+      if (property.buildings === 5) throw new Error('house_shortage')
+      throw new Error('sell_evenly')
     }
-    const group = groupProperties(state, space.group)
-    const maximum = Math.max(...group.map((item) => item.buildings))
-    if (property.buildings !== maximum) throw new Error('sell_evenly')
-    property.buildings -= 1
-    player.money += Math.floor((space.houseCost ?? 0) / 2)
-    emit(state, 'build', `${player.display_name} が${space.name}の建物を売却しました`, player.id)
+    sellBuilding(state, player, property)
   }
 
   if (
@@ -1016,9 +1278,8 @@ export function managePropertyEngine(
     state.game.pending_action.playerId === player.id &&
     player.money >= 0
   ) {
-    const rolledDoubles = state.game.pending_action.rolledDoubles
-    state.game.pending_action = {}
-    endTurn(state, player, rolledDoubles)
+    const debt = state.game.pending_action
+    resumeAfterDebt(state, player, debt)
     runCpuTurns(state)
   }
 }
@@ -1065,8 +1326,30 @@ export function declareBankruptcyEngine(state: MutableGameState, playerId: strin
     throw new Error('assets_available')
   }
   const creditorId = state.game.pending_action.creditorPlayerId
+  const bankAuctionSpaceIndexes = creditorId
+    ? []
+    : ownedProperties(state, player.id)
+        .map((property) => property.space_index)
+        .sort((a, b) => a - b)
   declareBankrupt(state, player, creditorId)
   state.game.pending_action = {}
+  if (
+    !creditorId &&
+    bankAuctionSpaceIndexes.length > 0 &&
+    activePlayers(state).length > 1
+  ) {
+    const [firstSpaceIndex, ...remainingSpaceIndexes] =
+      bankAuctionSpaceIndexes
+    startAuction(
+      state,
+      firstSpaceIndex,
+      player,
+      false,
+      'bankruptcy',
+      remainingSpaceIndexes,
+    )
+    return
+  }
   endTurn(state, player, false)
   runCpuTurns(state)
 }
@@ -1095,13 +1378,26 @@ export function proposeTradeEngine(
   const owns = (playerId: string, indexes: number[]) =>
     indexes.every((index) => {
       const property = propertyAt(state, index)
-      return property?.owner_player_id === playerId && property.buildings === 0
+      return (
+        property?.owner_player_id === playerId &&
+        canTransferProperty(state, property)
+      )
     })
+  const fromInterest = mortgageTransferInterest(
+    state,
+    input.requestedSpaceIndexes,
+  )
+  const targetInterest = mortgageTransferInterest(
+    state,
+    input.offeredSpaceIndexes,
+  )
   if (
     !owns(fromPlayerId, input.offeredSpaceIndexes) ||
     !owns(target.id, input.requestedSpaceIndexes) ||
-    current.money < input.offeredCash ||
-    target.money < input.requestedCash
+    current.money + input.requestedCash <
+      input.offeredCash + fromInterest ||
+    target.money + input.offeredCash <
+      input.requestedCash + targetInterest
   ) {
     throw new Error('invalid_trade')
   }
@@ -1128,22 +1424,63 @@ export function respondTradeEngine(
   if (!from || !to) throw new Error('player_not_found')
 
   if (accept) {
-    if (from.money < trade.offeredCash || to.money < trade.requestedCash) {
+    const offeredProperties = trade.offeredSpaceIndexes.map((index) =>
+      propertyAt(state, index),
+    )
+    const requestedProperties = trade.requestedSpaceIndexes.map((index) =>
+      propertyAt(state, index),
+    )
+    if (
+      offeredProperties.some(
+        (property) =>
+          !property ||
+          property.owner_player_id !== from.id ||
+          !canTransferProperty(state, property),
+      ) ||
+      requestedProperties.some(
+        (property) =>
+          !property ||
+          property.owner_player_id !== to.id ||
+          !canTransferProperty(state, property),
+      )
+    ) {
+      throw new Error('invalid_trade')
+    }
+    const fromInterest = mortgageTransferInterest(
+      state,
+      trade.requestedSpaceIndexes,
+    )
+    const toInterest = mortgageTransferInterest(
+      state,
+      trade.offeredSpaceIndexes,
+    )
+    if (
+      from.money + trade.requestedCash <
+        trade.offeredCash + fromInterest ||
+      to.money + trade.offeredCash <
+        trade.requestedCash + toInterest
+    ) {
       throw new Error('insufficient_funds')
     }
-    from.money += trade.requestedCash - trade.offeredCash
-    to.money += trade.offeredCash - trade.requestedCash
+    from.money += trade.requestedCash - trade.offeredCash - fromInterest
+    to.money += trade.offeredCash - trade.requestedCash - toInterest
     for (const index of trade.offeredSpaceIndexes) {
       const property = propertyAt(state, index)
-      if (property?.owner_player_id !== from.id || property.buildings > 0) throw new Error('invalid_trade')
+      if (!property) throw new Error('invalid_trade')
       property.owner_player_id = to.id
     }
     for (const index of trade.requestedSpaceIndexes) {
       const property = propertyAt(state, index)
-      if (property?.owner_player_id !== to.id || property.buildings > 0) throw new Error('invalid_trade')
+      if (!property) throw new Error('invalid_trade')
       property.owner_player_id = from.id
     }
-    emit(state, 'trade', `${to.display_name} が交換を承認しました`, to.id)
+    emit(
+      state,
+      'trade',
+      `${to.display_name} が交換を承認しました`,
+      to.id,
+      { fromInterest, toInterest },
+    )
   } else {
     emit(state, 'trade', `${to.display_name} が交換を断りました`, to.id)
   }

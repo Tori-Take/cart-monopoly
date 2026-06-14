@@ -8,7 +8,11 @@ import {
   type CSSProperties,
 } from 'react'
 import type { BoardSpace, PublicGameState } from '../_types'
-import { getSpace } from '../gameData'
+import {
+  HOTEL_SUPPLY,
+  HOUSE_SUPPLY,
+  getSpace,
+} from '../gameData'
 import { RichCard, RICH_CARD_CSS } from './RichCard'
 import {
   connectControllerAction,
@@ -42,7 +46,7 @@ const ERROR_LABELS: Record<string, string> = {
   game_paused: 'ゲームは一時停止中です。',
   purchase_not_available: '現在は購入できません。',
   insufficient_funds: '現金が不足しています。',
-  invalid_bid: '現在価格より$10以上高く、所持金以内で入札してください。',
+  invalid_bid: '現在価格より$1以上高く、所持金以内で入札してください。',
   highest_bidder_cannot_pass: '最高入札者は、他の入札があるまで降りられません。',
   cannot_build: 'この土地には建設できません。',
   build_evenly: '同色グループへ均等に建設してください。',
@@ -50,11 +54,16 @@ const ERROR_LABELS: Record<string, string> = {
   sell_buildings_first: '同色グループの建物をすべて売却してください。',
   cannot_mortgage: 'この土地は抵当に入れられません。',
   cannot_unmortgage: '抵当を解除できません。',
+  house_shortage: '銀行の家が不足しています。返却されるまで待ってください。',
+  hotel_shortage: '銀行のホテルが不足しています。返却されるまで待ってください。',
   assets_available: 'まだ売却・抵当で支払える資産があります。',
   invalid_trade: '交換条件を確認してください。建物のある土地は交換できません。',
   trade_not_available: '現在は交換を提案できません。',
   trade_target_unavailable: 'スマートフォン操作のプレイヤーにのみ交換を提案できます。',
   state_conflict: '他の操作と重なりました。もう一度お試しください。',
+  game_not_playing: 'ゲーム中のみ操作できます。',
+  debt_in_progress: '支払い中のプレイヤーだけが資産を整理できます。',
+  debt_reduction_only: '支払い中は建物の売却か抵当設定のみ行えます。',
 }
 
 function money(value: number) {
@@ -185,15 +194,35 @@ export function MobileController({
   const pending = state?.game.pending_action
   const auction = pending?.kind === 'auction' ? pending : null
   const cardMove = pending?.kind === 'card_move' ? pending : null
-  const minBid = auction ? auction.highestBid + 10 : 0
+  const minBid = auction ? auction.highestBid + 1 : 0
   const maxBid = me?.money ?? 0
   const bidValue = Math.min(Math.max(bid, minBid), Math.max(minBid, maxBid))
   const canAffordBid = maxBid >= minBid
+  const housesInUse =
+    state?.properties.reduce(
+      (total, property) =>
+        total +
+        (property.buildings >= 1 && property.buildings <= 4
+          ? property.buildings
+          : 0),
+      0,
+    ) ?? 0
+  const hotelsInUse =
+    state?.properties.filter((property) => property.buildings === 5).length ??
+    0
   const incomingTrade =
     pending?.kind === 'trade' && pending.toPlayerId === me?.id ? pending : null
   const outgoingTrade =
     pending?.kind === 'trade' && pending.fromPlayerId === me?.id ? pending : null
   const isMyTurn = Boolean(me && currentPlayer?.id === me.id)
+  const canManageProperties = Boolean(
+    me &&
+      !me.bankrupt &&
+      state?.game.status === 'playing' &&
+      (pending?.kind !== 'debt' || pending.playerId === me.id),
+  )
+  const resolvingMyDebt =
+    pending?.kind === 'debt' && pending.playerId === me?.id
 
   const auctionActive = Boolean(auction)
   useEffect(() => {
@@ -629,23 +658,38 @@ export function MobileController({
                         <>
                           <button
                             type="button"
-                            disabled={busy || property.mortgaged}
-                            onClick={() =>
+                            disabled={
+                              busy ||
+                              !canManageProperties ||
+                              resolvingMyDebt ||
+                              property.mortgaged ||
+                              (property.buildings < 4 &&
+                                housesInUse >= HOUSE_SUPPLY) ||
+                              (property.buildings === 4 &&
+                                hotelsInUse >= HOTEL_SUPPLY)
+                            }
+                            onClick={(event) => {
+                              event.stopPropagation()
                               void act('build', {
                                 spaceIndex: property.space_index,
                               })
-                            }
+                            }}
                           >
                             建設
                           </button>
                           <button
                             type="button"
-                            disabled={busy || property.buildings === 0}
-                            onClick={() =>
+                            disabled={
+                              busy ||
+                              !canManageProperties ||
+                              property.buildings === 0
+                            }
+                            onClick={(event) => {
+                              event.stopPropagation()
                               void act('sell', {
                                 spaceIndex: property.space_index,
                               })
-                            }
+                            }}
                           >
                             売却
                           </button>
@@ -653,13 +697,19 @@ export function MobileController({
                       ) : null}
                       <button
                         type="button"
-                        disabled={busy || property.buildings > 0}
-                        onClick={() =>
+                        disabled={
+                          busy ||
+                          !canManageProperties ||
+                          (resolvingMyDebt && property.mortgaged) ||
+                          property.buildings > 0
+                        }
+                        onClick={(event) => {
+                          event.stopPropagation()
                           void act(
                             property.mortgaged ? 'unmortgage' : 'mortgage',
                             { spaceIndex: property.space_index },
                           )
-                        }
+                        }}
                       >
                         {property.mortgaged ? '抵当解除' : '抵当'}
                       </button>
@@ -672,6 +722,9 @@ export function MobileController({
               ) : null}
             </div>
             <p className="cardCount">
+              銀行在庫: 家 {HOUSE_SUPPLY - housesInUse}/{HOUSE_SUPPLY} / ホテル{' '}
+              {HOTEL_SUPPLY - hotelsInUse}/{HOTEL_SUPPLY}
+              <br />
               留置所から無料で出るカード:{' '}
               {me.get_out_chance + me.get_out_chest}
             </p>

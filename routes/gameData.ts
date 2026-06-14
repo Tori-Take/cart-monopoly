@@ -1,5 +1,8 @@
 import type { BoardSpace, GameCard, TokenDefinition } from './_types'
 
+export const HOUSE_SUPPLY = 32
+export const HOTEL_SUPPLY = 12
+
 export const TOKENS: TokenDefinition[] = [
   { id: 'hat', label: 'トップハット', spriteColumn: 0, spriteRow: 0 },
   { id: 'car', label: 'ロードスター', spriteColumn: 1, spriteRow: 0 },

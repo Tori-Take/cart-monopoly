@@ -13,6 +13,7 @@ import type {
   Player,
   PropertyState,
   PublicGameState,
+  SavedGameSummary,
   TokenId,
   TokenSize,
 } from '../_types'
@@ -35,6 +36,7 @@ import {
   payBailEngine,
   proposeTradeEngine,
   purchaseEngine,
+  resolveDebtAfterCorrectionEngine,
   respondTradeEngine,
   rollTurnEngine,
   runCpuTurns,
@@ -84,6 +86,12 @@ function normalizeGame(row: Record<string, unknown>) {
     pending_action:
       row.pending_action && typeof row.pending_action === 'object'
         ? row.pending_action
+        : {},
+    last_mutation_id:
+      typeof row.last_mutation_id === 'string' ? row.last_mutation_id : null,
+    mutation_payload:
+      row.mutation_payload && typeof row.mutation_payload === 'object'
+        ? row.mutation_payload
         : {},
     settings: {
       startingMoney: 1500,
@@ -218,6 +226,8 @@ async function persistState(
 ) {
   const supabase = getAdminSupabase()
   const nextVersion = expectedVersion + 1
+  const mutationId = randomUUID()
+  const now = Date.now()
   const { error: gameError } = await supabase
     .from('monopoly_games')
     .update({
@@ -234,33 +244,10 @@ async function persistState(
       pending_action: state.game.pending_action,
       settings: state.game.settings,
       version: nextVersion,
-      started_at: state.game.started_at,
-      finished_at: state.game.finished_at,
-    })
-    .eq('organization_id', organizationId)
-    .eq('id', state.game.id)
-    .eq('version', expectedVersion)
-
-  if (gameError) throw new Error('state_conflict')
-
-  // Studio の supabase-mock は UPDATE ... RETURNING 非対応のため、
-  // .select() の戻りではなく再読込で楽観ロックの成立を確認する
-  const { data: verifyRow } = await supabase
-    .from('monopoly_games')
-    .select('version')
-    .eq('organization_id', organizationId)
-    .eq('id', state.game.id)
-    .maybeSingle()
-  if (!verifyRow || Number(verifyRow.version) !== nextVersion) {
-    throw new Error('state_conflict')
-  }
-  state.game.version = nextVersion
-
-  const writeResults = await Promise.all([
-    ...state.players.map((player) =>
-      supabase
-        .from('monopoly_players')
-        .update({
+      last_mutation_id: mutationId,
+      mutation_payload: {
+        players: state.players.map((player) => ({
+          id: player.id,
           display_name: player.display_name,
           controller_type: player.controller_type,
           token_id: player.token_id,
@@ -274,44 +261,49 @@ async function persistState(
           bankrupt: player.bankrupt,
           bankrupt_to_player_id: player.bankrupt_to_player_id,
           connected: player.connected,
-        })
-        .eq('organization_id', organizationId)
-        .eq('game_id', state.game.id)
-        .eq('id', player.id),
-    ),
-    ...state.properties.map((property) =>
-      supabase
-        .from('monopoly_properties')
-        .update({
+        })),
+        controllers: state.controllerMutations ?? [],
+        properties: state.properties.map((property) => ({
+          id: property.id,
           owner_player_id: property.owner_player_id,
           buildings: property.buildings,
           mortgaged: property.mortgaged,
-        })
-        .eq('organization_id', organizationId)
-        .eq('game_id', state.game.id)
-        .eq('id', property.id),
-    ),
-  ])
-  const failedWrite = writeResults.find((result) => result.error)
-  if (failedWrite?.error) {
-    throw new Error(`persist_failed: ${failedWrite.error.message}`)
-  }
+        })),
+        events: state.newEvents.map((event, index) => ({
+          event_type: event.event_type,
+          actor_player_id: event.actor_player_id,
+          message: event.message.slice(0, 240),
+          payload: event.payload ?? {},
+          created_at: new Date(now + index).toISOString(),
+        })),
+      },
+      started_at: state.game.started_at,
+      finished_at: state.game.finished_at,
+    })
+    .eq('organization_id', organizationId)
+    .eq('id', state.game.id)
+    .eq('version', expectedVersion)
 
-  if (state.newEvents.length > 0) {
-    const now = Date.now()
-    const { error: eventError } = await supabase.from('monopoly_events').insert(
-      state.newEvents.map((event, i) => ({
-        organization_id: organizationId,
-        game_id: state.game.id,
-        event_type: event.event_type,
-        actor_player_id: event.actor_player_id,
-        message: event.message.slice(0, 240),
-        payload: event.payload ?? {},
-        created_at: new Date(now + i).toISOString(),
-      })),
-    )
-    if (eventError) throw new Error(`persist_failed: ${eventError.message}`)
+  if (gameError) throw new Error(`persist_failed: ${gameError.message}`)
+
+  // Studio's mock has no UPDATE RETURNING, so verify both the version and
+  // this writer's unique mutation id after the conditional update.
+  const { data: verifyRow } = await supabase
+    .from('monopoly_games')
+    .select('version, last_mutation_id')
+    .eq('organization_id', organizationId)
+    .eq('id', state.game.id)
+    .maybeSingle()
+  if (
+    !verifyRow ||
+    Number(verifyRow.version) !== nextVersion ||
+    String(verifyRow.last_mutation_id) !== mutationId
+  ) {
+    throw new Error('state_conflict')
   }
+  state.game.version = nextVersion
+  state.game.last_mutation_id = mutationId
+  state.game.mutation_payload = {}
 }
 
 async function mutateGame(
@@ -326,6 +318,7 @@ async function mutateGame(
     game: bundle.game,
     players: bundle.players,
     properties: bundle.properties,
+    controllerMutations: [],
     newEvents: [],
   }
   mutate(state)
@@ -386,7 +379,10 @@ async function createGame(
     ])
     .select('*')
 
-  if (playerError || !players) throw new Error('player_create_failed')
+  if (playerError || !players) {
+    await supabase.from('monopoly_games').delete().eq('id', game.id)
+    throw new Error('player_create_failed')
+  }
 
   const purchasable = BOARD.filter(
     (space) =>
@@ -394,14 +390,14 @@ async function createGame(
       space.type === 'railroad' ||
       space.type === 'utility',
   )
-  await supabase.from('monopoly_properties').insert(
+  const { error: propertyError } = await supabase.from('monopoly_properties').insert(
     purchasable.map((space) => ({
       organization_id: organizationId,
       game_id: game!.id,
       space_index: space.index,
     })),
   )
-  await supabase.from('monopoly_events').insert({
+  const { error: eventError } = await supabase.from('monopoly_events').insert({
     organization_id: organizationId,
     game_id: game.id,
     event_type: 'system',
@@ -409,12 +405,63 @@ async function createGame(
     message: 'ゲーム卓を作成しました',
     payload: {},
   })
+  if (propertyError || eventError) {
+    await supabase.from('monopoly_games').delete().eq('id', game.id)
+    throw new Error(
+      `game_create_failed: ${propertyError?.message ?? eventError?.message}`,
+    )
+  }
   return fetchBundle(organizationId, game.id)
 }
 
-export async function getOrCreateHostGameAction(slug: string) {
+async function listGameSummaries(organizationId: string) {
+  const supabase = getAdminSupabase()
+  const [
+    { data: games, error },
+    { data: players, error: playerError },
+  ] = await Promise.all([
+    supabase
+      .from('monopoly_games')
+      .select('id, title, status, join_code, updated_at')
+      .eq('organization_id', organizationId)
+      .order('updated_at', { ascending: false })
+      .limit(50),
+    supabase
+      .from('monopoly_players')
+      .select('game_id')
+      .eq('organization_id', organizationId),
+  ])
+  if (error || playerError) {
+    throw new Error(error?.message ?? playerError?.message ?? 'games_load_failed')
+  }
+  const counts = new Map<string, number>()
+  for (const player of players ?? []) {
+    const id = String(player.game_id)
+    counts.set(id, (counts.get(id) ?? 0) + 1)
+  }
+  return (games ?? []).map((row: Record<string, unknown>) => ({
+    id: String(row.id),
+    title: String(row.title),
+    status: String(row.status) as SavedGameSummary['status'],
+    join_code: String(row.join_code),
+    player_count: counts.get(String(row.id)) ?? 0,
+    updated_at: String(row.updated_at),
+  })) satisfies SavedGameSummary[]
+}
+
+export async function getOrCreateHostGameAction(
+  slug: string,
+  requestedGameId?: string,
+) {
   const ctx = await requireHost(slug)
   const supabase = getAdminSupabase()
+  if (requestedGameId && UUID_PATTERN.test(requestedGameId)) {
+    const selected = await fetchBundle(
+      ctx.actor.organizationId,
+      requestedGameId,
+    )
+    if (selected) return { ok: true as const, bundle: selected }
+  }
   const { data } = await supabase
     .from('monopoly_games')
     .select('id')
@@ -430,6 +477,21 @@ export async function getOrCreateHostGameAction(slug: string) {
   return bundle
     ? { ok: true as const, bundle }
     : { ok: false as const, error: 'game_not_found' }
+}
+
+export async function listHostGamesAction(slug: string) {
+  const ctx = await requireHost(slug)
+  try {
+    return {
+      ok: true as const,
+      games: await listGameSummaries(ctx.actor.organizationId),
+    }
+  } catch (error) {
+    return {
+      ok: false as const,
+      error: error instanceof Error ? error.message : 'games_load_failed',
+    }
+  }
 }
 
 export async function createNewGameAction(slug: string, title: string) {
@@ -552,55 +614,43 @@ export async function assignControllerAction(
     return { ok: false as const, error: 'invalid_assignment' }
   }
   const wasCpu = player.controller_type === 'cpu'
-  const supabase = getAdminSupabase()
-  // この席に割り当て済みの旧コントローラーを解放する。
-  // ロビーでは再利用できるよう waiting、対局中は古い端末なので disconnected。
-  await supabase
-    .from('monopoly_controllers')
-    .update({
-      assigned_player_id: null,
-      status: inPlay ? 'disconnected' : 'waiting',
-    })
-    .eq('organization_id', orgId)
-    .eq('game_id', gameId)
-    .eq('assigned_player_id', playerId)
-  await supabase
-    .from('monopoly_controllers')
-    .update({ assigned_player_id: playerId, status: 'assigned' })
-    .eq('organization_id', orgId)
-    .eq('game_id', gameId)
-    .eq('id', controllerId)
+  const previousControllers = bundle.controllers.filter(
+    (item) => item.assigned_player_id === playerId,
+  )
 
-  if (inPlay) {
-    // 対局中はプレイヤー状態をバージョンロック経由で更新する
+  try {
     await mutateGame(orgId, gameId, (state) => {
       const target = state.players.find((item) => item.id === playerId)
       if (!target) throw new Error('player_not_found')
       target.connected = true
-      if (target.controller_type === 'cpu') target.controller_type = 'smartphone'
+      if (inPlay && target.controller_type === 'cpu') {
+        target.controller_type = 'smartphone'
+      }
+      state.controllerMutations = [
+        ...previousControllers.map((item) => ({
+          id: item.id,
+          assigned_player_id: null,
+          status: inPlay ? 'disconnected' as const : 'waiting' as const,
+        })),
+        {
+          id: controllerId,
+          assigned_player_id: playerId,
+          status: 'assigned',
+        },
+      ]
       state.newEvents.push({
         event_type: 'assign',
         actor_player_id: playerId,
-        message: wasCpu
+        message: wasCpu && inPlay
           ? `${target.display_name} がスマートフォンで復帰しました（CPU解除）`
           : `${controller.label} を ${target.display_name} に割り当てました`,
       })
     })
-  } else {
-    await supabase
-      .from('monopoly_players')
-      .update({ connected: true })
-      .eq('organization_id', orgId)
-      .eq('game_id', gameId)
-      .eq('id', playerId)
-    await supabase.from('monopoly_events').insert({
-      organization_id: orgId,
-      game_id: gameId,
-      event_type: 'assign',
-      actor_player_id: playerId,
-      message: `${controller.label} を ${player.display_name} に割り当てました`,
-      payload: { controllerId },
-    })
+  } catch (error) {
+    return {
+      ok: false as const,
+      error: error instanceof Error ? error.message : 'action_failed',
+    }
   }
   revalidatePath(`/org/${slug}/apps/${APP_ID}`)
   return { ok: true as const }
@@ -625,19 +675,52 @@ export async function leaveControllerAction(
   const orgId = validated.game.organization_id
   const playerId = validated.controller.assigned_player_id
   const supabase = getAdminSupabase()
-  await supabase
+  const activeGame =
+    validated.game.status === 'playing' || validated.game.status === 'paused'
+  if (playerId && activeGame) {
+    try {
+      await mutateGame(orgId, validated.game.id, (state) => {
+        const player = state.players.find((item) => item.id === playerId)
+        if (!player) throw new Error('player_not_found')
+        player.connected = false
+        state.controllerMutations = [{
+          id: controllerId,
+          assigned_player_id: null,
+          status: 'disconnected',
+        }]
+        state.newEvents.push({
+          event_type: 'system',
+          actor_player_id: playerId,
+          message: `${validated.controller.label} が接続を解除しました`,
+          payload: { controllerId },
+        })
+      })
+      return { ok: true as const }
+    } catch (error) {
+      return {
+        ok: false as const,
+        error: error instanceof Error ? error.message : 'action_failed',
+      }
+    }
+  }
+
+  const { error: controllerError } = await supabase
     .from('monopoly_controllers')
     .update({ assigned_player_id: null, status: 'disconnected' })
     .eq('organization_id', orgId)
     .eq('id', controllerId)
+  if (controllerError) {
+    return { ok: false as const, error: controllerError.message }
+  }
   if (playerId) {
-    await supabase
+    const { error: playerError } = await supabase
       .from('monopoly_players')
       .update({ connected: false })
       .eq('organization_id', orgId)
       .eq('game_id', validated.game.id)
       .eq('id', playerId)
-    await supabase.from('monopoly_events').insert({
+    if (playerError) return { ok: false as const, error: playerError.message }
+    const { error: eventError } = await supabase.from('monopoly_events').insert({
       organization_id: orgId,
       game_id: validated.game.id,
       event_type: 'system',
@@ -645,6 +728,7 @@ export async function leaveControllerAction(
       message: `${validated.controller.label} が接続を解除しました`,
       payload: { controllerId },
     })
+    if (eventError) return { ok: false as const, error: eventError.message }
   }
   return { ok: true as const }
 }
@@ -658,14 +742,16 @@ export async function convertPlayerToCpuAction(
 ) {
   const ctx = await requireHost(slug)
   const orgId = ctx.actor.organizationId
-  const supabase = getAdminSupabase()
-  // この席のコントローラーを解放する
-  await supabase
-    .from('monopoly_controllers')
-    .update({ assigned_player_id: null, status: 'disconnected' })
-    .eq('organization_id', orgId)
-    .eq('game_id', gameId)
-    .eq('assigned_player_id', playerId)
+  const bundle = await fetchBundle(orgId, gameId)
+  if (
+    !bundle ||
+    (bundle.game.status !== 'playing' && bundle.game.status !== 'paused')
+  ) {
+    return { ok: false as const, error: 'game_not_active' }
+  }
+  const assignedControllers = bundle.controllers.filter(
+    (controller) => controller.assigned_player_id === playerId,
+  )
   try {
     const updated = await mutateGame(orgId, gameId, (state) => {
       const player = state.players.find((item) => item.id === playerId)
@@ -675,6 +761,11 @@ export async function convertPlayerToCpuAction(
       }
       player.controller_type = 'cpu'
       player.connected = true
+      state.controllerMutations = assignedControllers.map((controller) => ({
+        id: controller.id,
+        assigned_player_id: null,
+        status: 'disconnected',
+      }))
       state.newEvents.push({
         event_type: 'system',
         actor_player_id: playerId,
@@ -737,16 +828,22 @@ export async function setPauseAction(
   paused: boolean,
 ) {
   const ctx = await requireHost(slug)
-  const supabase = getAdminSupabase()
-  const { error } = await supabase
-    .from('monopoly_games')
-    .update({ status: paused ? 'paused' : 'playing' })
-    .eq('organization_id', ctx.actor.organizationId)
-    .eq('id', gameId)
-    .in('status', ['playing', 'paused'])
-  return error
-    ? { ok: false as const, error: error.message }
-    : { ok: true as const }
+  try {
+    const bundle = await mutateGame(ctx.actor.organizationId, gameId, (state) => {
+      if (state.game.status !== 'playing' && state.game.status !== 'paused') {
+        throw new Error('game_not_active')
+      }
+      state.game.status = paused ? 'paused' : 'playing'
+    })
+    return bundle
+      ? { ok: true as const, bundle }
+      : { ok: false as const, error: 'game_not_found' }
+  } catch (error) {
+    return {
+      ok: false as const,
+      error: error instanceof Error ? error.message : 'action_failed',
+    }
+  }
 }
 
 const SPEED_VALUES: GameSpeed[] = ['very_slow', 'slow', 'normal', 'fast', 'very_fast']
@@ -760,24 +857,22 @@ export async function setGameSpeedAction(
   if (!SPEED_VALUES.includes(speed as GameSpeed)) {
     return { ok: false as const, error: 'invalid_speed' }
   }
-  const supabase = getAdminSupabase()
-  const { data: row } = await supabase
-    .from('monopoly_games')
-    .select('settings')
-    .eq('organization_id', ctx.actor.organizationId)
-    .eq('id', gameId)
-    .maybeSingle()
-  if (!row) return { ok: false as const, error: 'game_not_found' }
-  const current =
-    row.settings && typeof row.settings === 'object' ? row.settings : {}
-  const { error } = await supabase
-    .from('monopoly_games')
-    .update({ settings: { startingMoney: 1500, salary: 200, ...current, speed } })
-    .eq('organization_id', ctx.actor.organizationId)
-    .eq('id', gameId)
-  return error
-    ? { ok: false as const, error: error.message }
-    : { ok: true as const }
+  try {
+    const bundle = await mutateGame(ctx.actor.organizationId, gameId, (state) => {
+      state.game.settings = {
+        ...state.game.settings,
+        speed: speed as GameSpeed,
+      }
+    })
+    return bundle
+      ? { ok: true as const, bundle }
+      : { ok: false as const, error: 'game_not_found' }
+  } catch (error) {
+    return {
+      ok: false as const,
+      error: error instanceof Error ? error.message : 'action_failed',
+    }
+  }
 }
 
 const TOKEN_SIZE_VALUES: TokenSize[] = ['small', 'normal', 'large', 'xlarge']
@@ -791,24 +886,22 @@ export async function setGameTokenSizeAction(
   if (!TOKEN_SIZE_VALUES.includes(tokenSize as TokenSize)) {
     return { ok: false as const, error: 'invalid_token_size' }
   }
-  const supabase = getAdminSupabase()
-  const { data: row } = await supabase
-    .from('monopoly_games')
-    .select('settings')
-    .eq('organization_id', ctx.actor.organizationId)
-    .eq('id', gameId)
-    .maybeSingle()
-  if (!row) return { ok: false as const, error: 'game_not_found' }
-  const current =
-    row.settings && typeof row.settings === 'object' ? row.settings : {}
-  const { error } = await supabase
-    .from('monopoly_games')
-    .update({ settings: { startingMoney: 1500, salary: 200, ...current, tokenSize } })
-    .eq('organization_id', ctx.actor.organizationId)
-    .eq('id', gameId)
-  return error
-    ? { ok: false as const, error: error.message }
-    : { ok: true as const }
+  try {
+    const bundle = await mutateGame(ctx.actor.organizationId, gameId, (state) => {
+      state.game.settings = {
+        ...state.game.settings,
+        tokenSize: tokenSize as TokenSize,
+      }
+    })
+    return bundle
+      ? { ok: true as const, bundle }
+      : { ok: false as const, error: 'game_not_found' }
+  } catch (error) {
+    return {
+      ok: false as const,
+      error: error instanceof Error ? error.message : 'action_failed',
+    }
+  }
 }
 
 export async function rotateJoinSecretAction(slug: string, gameId: string) {
@@ -838,6 +931,7 @@ export async function hostCorrectionAction(
 ) {
   const ctx = await requireHost(slug)
   const updated = await mutateGame(ctx.actor.organizationId, gameId, (state) => {
+    if (state.game.status === 'finished') throw new Error('game_finished')
     if (input.action === 'end_turn') {
       forceEndTurnEngine(state)
       return
@@ -846,12 +940,15 @@ export async function hostCorrectionAction(
     if (!player) throw new Error('player_not_found')
     if (input.action === 'cash') {
       const amount = Math.trunc(Number(input.value) || 0)
-      player.money = Math.max(0, player.money + amount)
+      player.money += amount
       state.newEvents.push({
         event_type: 'correction',
         actor_player_id: player.id,
         message: `${player.display_name} の現金を ${amount >= 0 ? '+' : ''}$${amount} 調整しました`,
       })
+      if (resolveDebtAfterCorrectionEngine(state, player.id)) {
+        runCpuTurns(state)
+      }
     } else {
       player.position = Math.max(0, Math.min(39, Math.trunc(Number(input.value) || 0)))
       state.newEvents.push({
@@ -1099,7 +1196,11 @@ export async function controllerActionAction(
       validated.game.organization_id,
       validated.game.id,
       (state) => {
-        if (state.game.status === 'paused') throw new Error('game_paused')
+        if (state.game.status !== 'playing') {
+          throw new Error(
+            state.game.status === 'paused' ? 'game_paused' : 'game_not_playing',
+          )
+        }
         if (action === 'roll') rollTurnEngine(state, playerId)
         else if (action === 'advance_card') {
           advanceCardEngine(state, playerId)
@@ -1184,31 +1285,16 @@ export async function hostPlayerActionAction(
 
 export async function listAdminGamesAction(slug: string) {
   const ctx = await requireAdmin(slug)
-  const supabase = getAdminSupabase()
-  const [{ data: games, error }, { data: players }] = await Promise.all([
-    supabase
-      .from('monopoly_games')
-      .select('*')
-      .eq('organization_id', ctx.actor.organizationId)
-      .order('updated_at', { ascending: false })
-      .limit(50),
-    supabase
-      .from('monopoly_players')
-      .select('id, game_id')
-      .eq('organization_id', ctx.actor.organizationId),
-  ])
-  if (error) return { ok: false as const, error: error.message }
-  const counts = new Map<string, number>()
-  for (const player of players ?? []) {
-    const id = String(player.game_id)
-    counts.set(id, (counts.get(id) ?? 0) + 1)
-  }
-  return {
-    ok: true as const,
-    games: (games ?? []).map((row: Record<string, unknown>) => ({
-      ...normalizeGame(row),
-      player_count: counts.get(String(row.id)) ?? 0,
-    })),
+  try {
+    return {
+      ok: true as const,
+      games: await listGameSummaries(ctx.actor.organizationId),
+    }
+  } catch (error) {
+    return {
+      ok: false as const,
+      error: error instanceof Error ? error.message : 'games_load_failed',
+    }
   }
 }
 
@@ -1225,12 +1311,4 @@ export async function deleteGameAction(slug: string, gameId: string) {
   return error
     ? { ok: false as const, error: error.message }
     : { ok: true as const }
-}
-
-export async function deleteGameFormAction(
-  slug: string,
-  gameId: string,
-  _formData: FormData,
-): Promise<void> {
-  await deleteGameAction(slug, gameId)
 }

@@ -16,6 +16,7 @@ import type {
   GameCard,
   GameEvent,
   GameSpeed,
+  SavedGameSummary,
   TokenId,
   TokenSize,
 } from '../_types'
@@ -152,13 +153,16 @@ const EVENT_ICONS: Record<GameEvent['event_type'], string> = {
 export function HostGame({
   slug,
   initialBundle,
+  initialSavedGames,
   role,
 }: {
   slug: string
   initialBundle: GameBundle
+  initialSavedGames: SavedGameSummary[]
   role: string | null
 }) {
   const [bundle, setBundle] = useState(initialBundle)
+  const [savedGames, setSavedGames] = useState(initialSavedGames)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [joinUrl, setJoinUrl] = useState('')
@@ -255,6 +259,18 @@ export function HostGame({
 
   const currentPlayer = bundle.players.find(
     (player) => player.id === bundle.game.current_player_id,
+  )
+  const displayedSavedGames = savedGames.map((game) =>
+    game.id === bundle.game.id
+      ? {
+          ...game,
+          title: bundle.game.title,
+          status: bundle.game.status,
+          join_code: bundle.game.join_code,
+          player_count: bundle.players.length,
+          updated_at: bundle.game.updated_at,
+        }
+      : game,
   )
 
 
@@ -553,6 +569,15 @@ export function HostGame({
   }
 
   async function createNewGame() {
+    if (
+      (bundle.game.status === 'playing' ||
+        bundle.game.status === 'paused') &&
+      !window.confirm(
+        '現在のゲームは保存したまま、新しいゲーム卓へ切り替えます。よろしいですか？',
+      )
+    ) {
+      return
+    }
     const title = window.prompt('新しいゲーム卓の名前', 'MONOPOLY')
     if (title === null) return
     setBusy(true)
@@ -560,6 +585,20 @@ export function HostGame({
       const result = await createNewGameAction(slug, title)
       if (result.ok) {
         setBundle(result.bundle)
+        setSavedGames((current) => [
+          {
+            id: result.bundle.game.id,
+            title: result.bundle.game.title,
+            status: result.bundle.game.status,
+            join_code: result.bundle.game.join_code,
+            player_count: result.bundle.players.length,
+            updated_at: result.bundle.game.updated_at,
+          },
+          ...current.filter((game) => game.id !== result.bundle.game.id),
+        ])
+        const url = new URL(window.location.href)
+        url.searchParams.set('game', result.bundle.game.id)
+        window.history.replaceState({}, '', url)
         setError(null)
       } else {
         setError(result.error)
@@ -569,6 +608,13 @@ export function HostGame({
     } finally {
       setBusy(false)
     }
+  }
+
+  function switchGame(gameId: string) {
+    if (gameId === bundle.game.id) return
+    const url = new URL(window.location.href)
+    url.searchParams.set('game', gameId)
+    window.location.assign(url)
   }
 
   async function correctCash(playerId: string) {
@@ -797,6 +843,22 @@ export function HostGame({
         </header>
 
         {error ? <div className="errorBox">{error}</div> : null}
+
+        <section className="panelCard gamePicker">
+          <label htmlFor="saved-game">保存ゲーム</label>
+          <select
+            id="saved-game"
+            value={bundle.game.id}
+            disabled={busy}
+            onChange={(event) => switchGame(event.target.value)}
+          >
+            {displayedSavedGames.map((game) => (
+              <option key={game.id} value={game.id}>
+                {game.title} / {game.status} / {game.player_count}人
+              </option>
+            ))}
+          </select>
+        </section>
 
         <section className="statusStrip">
           <div><span>STATUS</span><strong>{bundle.game.status}</strong></div>
@@ -1058,6 +1120,7 @@ export function HostGame({
                     <button
                       type="button"
                       className="mini"
+                      disabled={busy || bundle.game.status === 'finished'}
                       onClick={() => correctCash(player.id)}
                     >
                       $
@@ -1065,6 +1128,7 @@ export function HostGame({
                     <button
                       type="button"
                       className="mini"
+                      disabled={busy || bundle.game.status === 'finished'}
                       onClick={() => correctPosition(player.id)}
                     >
                       位置
@@ -1101,7 +1165,7 @@ export function HostGame({
             >
               ゲーム開始
             </button>
-          ) : (
+          ) : inPlay ? (
             <>
               <button
                 type="button"
@@ -1131,6 +1195,8 @@ export function HostGame({
                 ターン強制終了
               </button>
             </>
+          ) : (
+            <div className="finishedNotice">このゲームは終了しています。</div>
           )}
         </section>
 
@@ -1138,7 +1204,7 @@ export function HostGame({
           <span className="sectionLabel">進行スピード</span>
           <select
             value={speed}
-            disabled={busy}
+            disabled={busy || bundle.game.status === 'finished'}
             onChange={(event) => {
               const next = event.target.value as GameSpeed
               setBundle((current) => ({
@@ -1148,7 +1214,9 @@ export function HostGame({
                   settings: { ...current.game.settings, speed: next },
                 },
               }))
-              void setGameSpeedAction(slug, bundle.game.id, next)
+              void run(() =>
+                setGameSpeedAction(slug, bundle.game.id, next),
+              )
             }}
           >
             {SPEED_OPTIONS.map((opt) => (
@@ -1161,7 +1229,7 @@ export function HostGame({
           <span className="sectionLabel">駒の大きさ</span>
           <select
             value={tokenSizeKey}
-            disabled={busy}
+            disabled={busy || bundle.game.status === 'finished'}
             onChange={(event) => {
               const next = event.target.value as TokenSize
               setBundle((current) => ({
@@ -1171,7 +1239,9 @@ export function HostGame({
                   settings: { ...current.game.settings, tokenSize: next },
                 },
               }))
-              void setGameTokenSizeAction(slug, bundle.game.id, next)
+              void run(() =>
+                setGameTokenSizeAction(slug, bundle.game.id, next),
+              )
             }}
           >
             {TOKEN_SIZE_OPTIONS.map((opt) => (
@@ -1551,6 +1621,19 @@ export function HostGame({
         .eventLog > div { display: grid; grid-template-columns: 40px 1fr; gap: 6px; font-size: 11px; border-bottom: 1px solid rgba(255,255,255,.06); padding-bottom: 4px; }
         .eventLog time { color: #a99b9f; }
         .adminLink { color: #efbf64; text-align: center; font-size: 12px; }
+        .gamePicker {
+          display: grid;
+          grid-template-columns: auto minmax(0, 1fr);
+          align-items: center;
+          gap: 10px;
+        }
+        .gamePicker label {
+          color: #efbf64;
+          font-size: 10px;
+          font-weight: 900;
+          letter-spacing: .12em;
+        }
+        .gamePicker select { min-width: 0; }
         @media (max-width: 1050px) {
           .hostShell { grid-template-columns: 1fr; }
           .boardStage {
