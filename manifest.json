@@ -13,6 +13,7 @@
     "sdkVersion": "^1.0",
     "minPlatformVersion": "0.5.0"
   },
+  "dataAccess": "privileged",
   "permissions": [
     {
       "id": "player",
